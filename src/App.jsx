@@ -144,20 +144,23 @@ function App() {
     };
 
     try {
-      const lines = text.split('\n').map(l => l.trim()).filter(l => l);
+      console.log('Parsing text, length:', text.length);
       
-      // Regatta-Name finden
-      for (const line of lines) {
-        if (!line.includes('Powered by') && !line.includes('Page ') && 
-            !line.includes('Report Created') && !line.includes('www.manage2sail') && 
-            !line.includes('Overall Results') && line.length > 3 && line.length < 100) {
-          result.regattaName = line;
-          break;
+      // Regatta-Name: Suche nach bekannten Mustern
+      // Format: "... manage2sail.com REGATTA-NAME Overall Results ..."
+      const regattaMatch = text.match(/manage2sail\.com\s+([A-Za-zäöüÄÖÜß0-9\-\s]+?)\s+Overall Results/i);
+      if (regattaMatch) {
+        result.regattaName = regattaMatch[1].trim();
+      } else {
+        // Alternativer Ansatz: Suche nach Text vor "Overall Results"
+        const altMatch = text.match(/([A-Za-zäöüÄÖÜß\-]+(?:\s+[A-Za-zäöüÄÖÜß\-]+){0,5})\s+Overall Results/i);
+        if (altMatch) {
+          result.regattaName = altMatch[1].trim();
         }
       }
       
       // Bootsklasse: Suche nach bekannten Klassen
-      const classPatterns = ['Optimist A', 'Optimist B', 'Optimist', '420er', '420', 'Laser', 'ILCA', '29er', 'Europe', 'Pirat'];
+      const classPatterns = ['Optimist A', 'Optimist B', 'Optimist C', '420er', '420', 'Laser', 'ILCA 4', 'ILCA 6', 'ILCA 7', '29er', 'Europe', 'Pirat', 'Cadet'];
       for (const pattern of classPatterns) {
         if (text.includes(pattern)) {
           result.boatClass = pattern;
@@ -168,14 +171,16 @@ function App() {
       // Datum
       const dateMatch = text.match(/(\d{1,2})\s*(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\s*(\d{4})/i);
       if (dateMatch) {
-        result.date = `${dateMatch[1]} ${dateMatch[2]} ${dateMatch[3]}`;
+        result.date = `${dateMatch[1]} ${dateMatch[2].toUpperCase()} ${dateMatch[3]}`;
       }
       
-      // Wettfahrten zählen
-      const raceMatches = text.match(/R\d+/g);
+      // Wettfahrten zählen (R1, R2, R3...)
+      const raceMatches = text.match(/\bR(\d+)\b/g);
       if (raceMatches) {
-        const raceNumbers = raceMatches.map(r => parseInt(r.replace('R', ''))).filter(n => !isNaN(n));
-        result.raceCount = Math.max(...raceNumbers, 0);
+        const raceNumbers = raceMatches.map(r => parseInt(r.replace('R', ''))).filter(n => !isNaN(n) && n < 20);
+        if (raceNumbers.length > 0) {
+          result.raceCount = Math.max(...raceNumbers);
+        }
       }
       
       // Segelnummern und Platzierungen finden
@@ -183,23 +188,30 @@ function App() {
       const userSNNorm = normalizeSN(sailNumber || '');
       const userSNNumbers = (sailNumber || '').replace(/\D/g, '');
       
-      // Pattern: Rang + GER + Nummer
-      const entryPattern = /(\d+)\s+GER\s*(\d+)\s+([A-Za-zÄÖÜäöüß\s\-]+)/g;
+      console.log('Looking for sail number:', sailNumber, '-> normalized:', userSNNorm, '-> numbers:', userSNNumbers);
+      
+      // Pattern: Rang + GER + Nummer (verschiedene Formate)
+      // Format im PDF: "5 GER 13162 Moritz SCHUMANN TSC"
+      const entryPattern = /\b(\d{1,3})\s+GER\s*(\d{3,5})\s+([A-Za-zÄÖÜäöüß][A-Za-zÄÖÜäöüß\s\-]+?)(?:\s+[A-Z]{2,10}\s+|\s+\d)/g;
       let match;
       let maxRank = 0;
+      const seenRanks = new Set();
       
       while ((match = entryPattern.exec(text)) !== null) {
         const rank = parseInt(match[1]);
-        const sailNum = 'GER ' + match[2];
+        const sailNumDigits = match[2];
+        const sailNum = 'GER ' + sailNumDigits;
         const name = match[3].trim();
         
-        if (rank > 0 && rank < 500) { // Sinnvoller Rang-Bereich
+        // Nur gültige Ränge und keine Duplikate
+        if (rank > 0 && rank < 200 && !seenRanks.has(rank)) {
+          seenRanks.add(rank);
           if (rank > maxRank) maxRank = rank;
           
           const entry = {
             rank,
             sailNumber: sailNum,
-            name: name.substring(0, 50), // Name kürzen
+            name: name.substring(0, 40),
             club: '',
             totalPoints: 0,
             netPoints: 0
@@ -209,23 +221,32 @@ function App() {
           
           // Prüfe ob dies der gesuchte Teilnehmer ist
           const entrySNNorm = normalizeSN(sailNum);
-          const entrySNNumbers = match[2];
           
-          if (userSNNorm && (
+          if (userSNNumbers && (
+              sailNumDigits === userSNNumbers ||
               entrySNNorm === userSNNorm ||
-              entrySNNumbers === userSNNumbers ||
               entrySNNorm.includes(userSNNumbers) ||
-              userSNNorm.includes(entrySNNumbers)
+              userSNNorm.includes(sailNumDigits)
           )) {
+            console.log('MATCH FOUND:', sailNum, 'rank:', rank, 'name:', name);
             result.participant = entry;
           }
         }
       }
       
-      result.totalParticipants = maxRank;
-      result.success = result.regattaName && result.allResults.length > 0;
+      result.totalParticipants = maxRank || result.allResults.length;
+      result.success = (result.regattaName || result.boatClass) && result.allResults.length > 0;
       
-      console.log('Parse result:', result);
+      console.log('Parse result:', {
+        success: result.success,
+        regattaName: result.regattaName,
+        boatClass: result.boatClass,
+        date: result.date,
+        raceCount: result.raceCount,
+        totalParticipants: result.totalParticipants,
+        foundParticipant: !!result.participant,
+        allResultsCount: result.allResults.length
+      });
       
     } catch (error) {
       console.error('Parse error:', error);
