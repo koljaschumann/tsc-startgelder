@@ -67,7 +67,7 @@ function App() {
     }
   }, [error]);
 
-  // Handle PDF Upload
+  // Handle PDF Upload - Parse im Browser mit pdf.js
   const handlePdfUpload = async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -88,31 +88,38 @@ function App() {
     setPdfResult(null);
     
     try {
-      const formData = new FormData();
-      formData.append('pdf', file);
-      formData.append('sailNumber', boatData.segelnummer);
+      // PDF im Browser laden und Text extrahieren
+      const arrayBuffer = await file.arrayBuffer();
       
-      const response = await fetch('/api/parse-pdf', {
-        method: 'POST',
-        body: formData
-      });
+      // Dynamisch pdf.js laden
+      const pdfjsLib = await import('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.mjs');
+      pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.mjs';
       
-      const data = await response.json();
+      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
       
-      if (!response.ok) {
-        throw new Error(data.error || 'Fehler beim Verarbeiten der PDF');
+      let fullText = '';
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i);
+        const textContent = await page.getTextContent();
+        const pageText = textContent.items.map(item => item.str).join(' ');
+        fullText += pageText + '\n';
       }
       
-      if (!data.success) {
+      console.log('Extracted text:', fullText.substring(0, 1000));
+      
+      // Parse the text
+      const result = parseRegattaPDF(fullText, boatData.segelnummer);
+      
+      if (!result.success) {
         throw new Error('PDF konnte nicht gelesen werden. Ist es eine manage2sail Ergebnisliste?');
       }
       
-      setPdfResult(data);
+      setPdfResult(result);
       
-      if (!data.participant) {
+      if (!result.participant) {
         setError(`Segelnummer "${boatData.segelnummer}" wurde nicht in der Ergebnisliste gefunden. Bitte prüfe die Segelnummer in den Einstellungen.`);
       } else {
-        setSuccess(`${data.participant.name} gefunden: Platz ${data.participant.rank} von ${data.totalParticipants}`);
+        setSuccess(`${result.participant.name} gefunden: Platz ${result.participant.rank} von ${result.totalParticipants}`);
       }
       
     } catch (err) {
@@ -120,9 +127,112 @@ function App() {
       setError(err.message);
     } finally {
       setIsProcessing(false);
-      // Reset file input
       event.target.value = '';
     }
+  };
+
+  // PDF Text Parser (im Browser)
+  const parseRegattaPDF = (text, sailNumber) => {
+    const result = {
+      success: false,
+      regattaName: '',
+      boatClass: '',
+      date: '',
+      raceCount: 0,
+      totalParticipants: 0,
+      participant: null,
+      allResults: []
+    };
+
+    try {
+      const lines = text.split('\n').map(l => l.trim()).filter(l => l);
+      
+      // Regatta-Name finden
+      for (const line of lines) {
+        if (!line.includes('Powered by') && !line.includes('Page ') && 
+            !line.includes('Report Created') && !line.includes('www.manage2sail') && 
+            !line.includes('Overall Results') && line.length > 3 && line.length < 100) {
+          result.regattaName = line;
+          break;
+        }
+      }
+      
+      // Bootsklasse: Suche nach bekannten Klassen
+      const classPatterns = ['Optimist A', 'Optimist B', 'Optimist', '420er', '420', 'Laser', 'ILCA', '29er', 'Europe', 'Pirat'];
+      for (const pattern of classPatterns) {
+        if (text.includes(pattern)) {
+          result.boatClass = pattern;
+          break;
+        }
+      }
+      
+      // Datum
+      const dateMatch = text.match(/(\d{1,2})\s*(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\s*(\d{4})/i);
+      if (dateMatch) {
+        result.date = `${dateMatch[1]} ${dateMatch[2]} ${dateMatch[3]}`;
+      }
+      
+      // Wettfahrten zählen
+      const raceMatches = text.match(/R\d+/g);
+      if (raceMatches) {
+        const raceNumbers = raceMatches.map(r => parseInt(r.replace('R', ''))).filter(n => !isNaN(n));
+        result.raceCount = Math.max(...raceNumbers, 0);
+      }
+      
+      // Segelnummern und Platzierungen finden
+      const normalizeSN = (sn) => sn.replace(/[\s\-\.]+/g, '').toUpperCase();
+      const userSNNorm = normalizeSN(sailNumber || '');
+      const userSNNumbers = (sailNumber || '').replace(/\D/g, '');
+      
+      // Pattern: Rang + GER + Nummer
+      const entryPattern = /(\d+)\s+GER\s*(\d+)\s+([A-Za-zÄÖÜäöüß\s\-]+)/g;
+      let match;
+      let maxRank = 0;
+      
+      while ((match = entryPattern.exec(text)) !== null) {
+        const rank = parseInt(match[1]);
+        const sailNum = 'GER ' + match[2];
+        const name = match[3].trim();
+        
+        if (rank > 0 && rank < 500) { // Sinnvoller Rang-Bereich
+          if (rank > maxRank) maxRank = rank;
+          
+          const entry = {
+            rank,
+            sailNumber: sailNum,
+            name: name.substring(0, 50), // Name kürzen
+            club: '',
+            totalPoints: 0,
+            netPoints: 0
+          };
+          
+          result.allResults.push(entry);
+          
+          // Prüfe ob dies der gesuchte Teilnehmer ist
+          const entrySNNorm = normalizeSN(sailNum);
+          const entrySNNumbers = match[2];
+          
+          if (userSNNorm && (
+              entrySNNorm === userSNNorm ||
+              entrySNNumbers === userSNNumbers ||
+              entrySNNorm.includes(userSNNumbers) ||
+              userSNNorm.includes(entrySNNumbers)
+          )) {
+            result.participant = entry;
+          }
+        }
+      }
+      
+      result.totalParticipants = maxRank;
+      result.success = result.regattaName && result.allResults.length > 0;
+      
+      console.log('Parse result:', result);
+      
+    } catch (error) {
+      console.error('Parse error:', error);
+    }
+    
+    return result;
   };
 
   // Add regatta from PDF result
