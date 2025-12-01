@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import * as pdfjsLib from 'pdfjs-dist'
+import { jsPDF } from 'jspdf'
+import 'jspdf-autotable'
 
 // PDF.js Worker einrichten
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`
@@ -400,6 +402,119 @@ function App() {
     a.click();
   };
 
+  // PDF-Erstattungsantrag generieren
+  const exportToPdf = () => {
+    if (regatten.length === 0) {
+      setError('Keine Regatten zum Exportieren');
+      return;
+    }
+
+    const doc = new jsPDF();
+    const pageWidth = doc.internal.pageSize.getWidth();
+    
+    // Header
+    doc.setFontSize(18);
+    doc.setFont('helvetica', 'bold');
+    doc.text('Tegeler Segel-Club e.V.', pageWidth / 2, 20, { align: 'center' });
+    
+    doc.setFontSize(14);
+    doc.text('Antrag auf Startgeld-Erstattung', pageWidth / 2, 30, { align: 'center' });
+    
+    // Segler-Info
+    doc.setFontSize(10);
+    doc.setFont('helvetica', 'normal');
+    let y = 45;
+    
+    doc.text(`Datum: ${new Date().toLocaleDateString('de-DE')}`, 15, y);
+    y += 10;
+    
+    if (boatData.seglername) {
+      doc.text(`Segler/in: ${boatData.seglername}`, 15, y);
+      y += 7;
+    }
+    if (boatData.segelnummer) {
+      doc.text(`Segelnummer: ${boatData.segelnummer}`, 15, y);
+      y += 7;
+    }
+    if (boatData.bootsklasse) {
+      doc.text(`Bootsklasse: ${boatData.bootsklasse}`, 15, y);
+      y += 7;
+    }
+    
+    y += 5;
+    
+    // Tabelle
+    const tableData = regatten.map(r => [
+      r.regattaName,
+      r.boatClass || '-',
+      formatDate(r.date),
+      `${r.placement}/${r.totalParticipants}`,
+      r.raceCount,
+      `${calculateRefund(r.placement, r.totalParticipants, r.raceCount)} EUR`
+    ]);
+    
+    doc.autoTable({
+      startY: y,
+      head: [['Regatta', 'Klasse', 'Datum', 'Platzierung', 'Wettfahrten', 'Erstattung']],
+      body: tableData,
+      theme: 'grid',
+      headStyles: { 
+        fillColor: [0, 82, 147],
+        textColor: 255,
+        fontStyle: 'bold'
+      },
+      styles: { 
+        fontSize: 9,
+        cellPadding: 3
+      },
+      columnStyles: {
+        0: { cellWidth: 55 },
+        1: { cellWidth: 25 },
+        2: { cellWidth: 25 },
+        3: { cellWidth: 25 },
+        4: { cellWidth: 25 },
+        5: { cellWidth: 25 }
+      }
+    });
+    
+    // Summe
+    const finalY = doc.lastAutoTable.finalY + 10;
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(12);
+    doc.text(`Gesamt-Erstattung: ${totalRefund} EUR`, pageWidth - 15, finalY, { align: 'right' });
+    
+    // Bankverbindung
+    if (boatData.iban || boatData.kontoinhaber) {
+      doc.setFontSize(10);
+      doc.setFont('helvetica', 'normal');
+      let bankY = finalY + 15;
+      doc.text('Bankverbindung:', 15, bankY);
+      bankY += 7;
+      if (boatData.kontoinhaber) {
+        doc.text(`Kontoinhaber: ${boatData.kontoinhaber}`, 15, bankY);
+        bankY += 6;
+      }
+      if (boatData.iban) {
+        doc.text(`IBAN: ${boatData.iban}`, 15, bankY);
+      }
+    }
+    
+    // Unterschrift
+    const signY = doc.internal.pageSize.getHeight() - 40;
+    doc.setFontSize(9);
+    doc.text('_'.repeat(40), 15, signY);
+    doc.text('Datum, Unterschrift', 15, signY + 5);
+    
+    // Footer
+    doc.setFontSize(8);
+    doc.setTextColor(128);
+    doc.text(`Erstellt am ${new Date().toLocaleString('de-DE')} mit TSC Startgeld-App`, pageWidth / 2, doc.internal.pageSize.getHeight() - 10, { align: 'center' });
+    
+    // Download
+    doc.save(`TSC_Erstattungsantrag_${new Date().toISOString().split('T')[0]}.pdf`);
+    setSuccess('PDF-Antrag wurde erstellt!');
+  };
+
   // Total refund
   const totalRefund = regatten.reduce((sum, r) => 
     sum + calculateRefund(r.placement, r.totalParticipants, r.raceCount), 0
@@ -718,17 +833,27 @@ function App() {
             
             {/* Summary */}
             {regatten.length > 0 && (
-              <div className="bg-white/10 backdrop-blur-sm rounded-xl p-4 border border-white/20 flex items-center justify-between">
-                <div>
-                  <span className="text-blue-200">Gesamt-Erstattung:</span>
-                  <span className="text-2xl font-bold text-white ml-2">{totalRefund}€</span>
+              <div className="bg-white/10 backdrop-blur-sm rounded-xl p-4 border border-white/20">
+                <div className="flex items-center justify-between mb-4">
+                  <div>
+                    <span className="text-blue-200">Gesamt-Erstattung:</span>
+                    <span className="text-2xl font-bold text-white ml-2">{totalRefund}€</span>
+                  </div>
                 </div>
-                <button
-                  onClick={exportToCsv}
-                  className="px-4 py-2 bg-cyan-500 hover:bg-cyan-400 text-white rounded-lg font-medium transition-all"
-                >
-                  📥 CSV Export
-                </button>
+                <div className="flex gap-2">
+                  <button
+                    onClick={exportToPdf}
+                    className="flex-1 px-4 py-2 bg-cyan-500 hover:bg-cyan-400 text-white rounded-lg font-medium transition-all flex items-center justify-center gap-2"
+                  >
+                    📄 PDF-Antrag erstellen
+                  </button>
+                  <button
+                    onClick={exportToCsv}
+                    className="px-4 py-2 bg-white/20 hover:bg-white/30 text-white rounded-lg font-medium transition-all"
+                  >
+                    📥 CSV
+                  </button>
+                </div>
               </div>
             )}
 
