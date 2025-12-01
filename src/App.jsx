@@ -1,4 +1,8 @@
 import { useState, useEffect, useCallback } from 'react'
+import * as pdfjsLib from 'pdfjs-dist'
+
+// PDF.js Worker einrichten
+pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`
 
 // TSC Startgeld-Erstattung App v4.0 - PDF-basiert
 // Einfacher, zuverlässiger Workflow: PDF hochladen → Daten extrahiert → Fertig
@@ -90,11 +94,6 @@ function App() {
     try {
       // PDF im Browser laden und Text extrahieren
       const arrayBuffer = await file.arrayBuffer();
-      
-      // Dynamisch pdf.js laden
-      const pdfjsLib = await import('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.mjs');
-      pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.mjs';
-      
       const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
       
       let fullText = '';
