@@ -749,12 +749,24 @@ function App() {
   };
 
   // Drag & Drop Handler
-  const handleDragOver = (e) => { e.preventDefault(); setIsDragging(true); };
-  const handleDragLeave = (e) => { e.preventDefault(); setIsDragging(false); };
+  const [isDraggingInvoice, setIsDraggingInvoice] = useState(false);
+  
+  const handleDragOver = (e) => { e.preventDefault(); e.stopPropagation(); setIsDragging(true); };
+  const handleDragLeave = (e) => { e.preventDefault(); e.stopPropagation(); setIsDragging(false); };
   const handleDropResult = async (e) => {
     e.preventDefault();
+    e.stopPropagation();
     setIsDragging(false);
     await processResultPdf(e.dataTransfer.files?.[0]);
+  };
+  
+  const handleDragOverInvoice = (e) => { e.preventDefault(); e.stopPropagation(); setIsDraggingInvoice(true); };
+  const handleDragLeaveInvoice = (e) => { e.preventDefault(); e.stopPropagation(); setIsDraggingInvoice(false); };
+  const handleDropInvoice = async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingInvoice(false);
+    await processInvoicePdf(e.dataTransfer.files?.[0]);
   };
 
   // === RENDER ===
@@ -898,8 +910,12 @@ function App() {
                 </p>
                 
                 <div
+                  onDragOver={handleDragOverInvoice}
+                  onDragLeave={handleDragLeaveInvoice}
+                  onDrop={handleDropInvoice}
                   className={`border-2 border-dashed rounded-xl p-6 text-center transition-all cursor-pointer
                     ${currentInvoiceData ? 'border-green-400 bg-green-500/10' :
+                      isDraggingInvoice ? 'border-cyan-400 bg-cyan-500/20' :
                       invoiceProcessing ? 'border-cyan-400 bg-cyan-500/10' :
                       'border-white/30 hover:border-cyan-400 hover:bg-white/5'}`}
                   onClick={() => !invoiceProcessing && document.getElementById('invoice-pdf-input').click()}
@@ -924,6 +940,11 @@ function App() {
                         </div>
                       ) : <div>Rechnung wird verarbeitet...</div>}
                     </div>
+                  ) : isDraggingInvoice ? (
+                    <div className="text-cyan-300">
+                      <div className="text-3xl mb-2">📥</div>
+                      <div className="font-medium">Rechnung hier ablegen</div>
+                    </div>
                   ) : currentInvoiceData ? (
                     <div className="text-green-300">
                       <div className="text-3xl mb-2">✅</div>
@@ -932,7 +953,7 @@ function App() {
                   ) : (
                     <div className="text-blue-200">
                       <div className="text-3xl mb-2">🧾</div>
-                      <div className="font-medium text-white">Rechnung auswählen</div>
+                      <div className="font-medium text-white">Rechnung auswählen oder hierher ziehen</div>
                     </div>
                   )}
                 </div>
