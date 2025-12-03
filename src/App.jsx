@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect } from 'react'
 import * as pdfjsLib from 'pdfjs-dist'
 import { jsPDF } from 'jspdf'
 import 'jspdf-autotable'
@@ -6,8 +6,8 @@ import 'jspdf-autotable'
 // PDF.js Worker einrichten
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`
 
-// TSC Startgeld-Erstattung App v4.0 - PDF-basiert
-// Einfacher, zuverlässiger Workflow: PDF hochladen → Daten extrahiert → Fertig
+// TSC Startgeld-Erstattung App v5.0
+// Features: PDF-Upload, Duplikat-Erkennung, PDF-Archiv, Gesamt-Export
 
 function App() {
   // Bootsdaten (persistent)
@@ -22,14 +22,14 @@ function App() {
     };
   });
   
-  // Regatta-Liste
+  // Regatta-Liste mit PDF-Daten
   const [regatten, setRegatten] = useState(() => {
-    const saved = localStorage.getItem('tsc-regatten-v4');
+    const saved = localStorage.getItem('tsc-regatten-v5');
     return saved ? JSON.parse(saved) : [];
   });
   
   // UI State
-  const [activeTab, setActiveTab] = useState('add'); // 'add' | 'list' | 'settings'
+  const [activeTab, setActiveTab] = useState('add');
   const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
@@ -37,7 +37,9 @@ function App() {
   
   // PDF Upload State
   const [pdfResult, setPdfResult] = useState(null);
+  const [currentPdfData, setCurrentPdfData] = useState(null); // Base64 der aktuellen PDF
   const [manualMode, setManualMode] = useState(false);
+  const [debugText, setDebugText] = useState(''); // Debug: Extrahierter Text
   
   // Manuelle Eingabe State
   const [manualData, setManualData] = useState({
@@ -46,8 +48,7 @@ function App() {
     date: '',
     placement: '',
     totalParticipants: '',
-    raceCount: '',
-    manage2sailUrl: ''
+    raceCount: ''
   });
 
   // Persist data
@@ -56,10 +57,10 @@ function App() {
   }, [boatData]);
   
   useEffect(() => {
-    localStorage.setItem('tsc-regatten-v4', JSON.stringify(regatten));
+    localStorage.setItem('tsc-regatten-v5', JSON.stringify(regatten));
   }, [regatten]);
 
-  // Clear messages after 5 seconds
+  // Clear messages
   useEffect(() => {
     if (success) {
       const timer = setTimeout(() => setSuccess(null), 5000);
@@ -69,12 +70,172 @@ function App() {
   
   useEffect(() => {
     if (error) {
-      const timer = setTimeout(() => setError(null), 8000);
+      const timer = setTimeout(() => setError(null), 10000);
       return () => clearTimeout(timer);
     }
   }, [error]);
 
-  // Handle PDF Upload - Parse im Browser mit pdf.js
+  // === PDF PARSING ===
+  const parseRegattaPDF = (text, sailNumber) => {
+    const result = {
+      success: false,
+      regattaName: '',
+      boatClass: '',
+      date: '',
+      raceCount: 0,
+      totalParticipants: 0,
+      participant: null,
+      allResults: []
+    };
+
+    try {
+      console.log('=== PDF PARSING ===');
+      console.log('Text length:', text.length);
+      
+      // Normalisiere Text (entferne mehrfache Leerzeichen)
+      const normalizedText = text.replace(/\s+/g, ' ');
+      
+      // === REGATTA-NAME ===
+      // Suche nach Pattern: "Name 2025 - Opti" oder "Name-Preis 2025"
+      const namePatterns = [
+        /([A-Za-zäöüÄÖÜß\-]+(?:[\s\-][A-Za-zäöüÄÖÜß\-]+)*[\s\-]*(?:Preis|Pokal|Cup|Trophy|Regatta|Festival)[\s\-]*\d{4})/i,
+        /([A-Za-zäöüÄÖÜß\-]+[\s\-]+\d{4}[\s\-]+[\-][\s\-]+Opti[mist]*\s*[ABC]?)/i,
+        /manage2sail\.com\s+([A-Za-zäöüÄÖÜß0-9\s\-]+?)(?:\s+Ergebnisse|\s+Overall|\s+Results)/i,
+      ];
+      
+      for (const pattern of namePatterns) {
+        const match = normalizedText.match(pattern);
+        if (match) {
+          result.regattaName = match[1].trim().replace(/\s+/g, ' ');
+          break;
+        }
+      }
+      
+      // === BOOTSKLASSE ===
+      const classMatch = normalizedText.match(/Opti(?:mist)?\s*([ABC])/i);
+      if (classMatch) {
+        result.boatClass = 'Optimist ' + classMatch[1].toUpperCase();
+      } else if (/Optimist/i.test(normalizedText)) {
+        result.boatClass = 'Optimist';
+      } else if (/420/i.test(normalizedText)) {
+        result.boatClass = '420er';
+      } else if (/ILCA/i.test(normalizedText)) {
+        const ilcaMatch = normalizedText.match(/ILCA\s*(\d)/i);
+        result.boatClass = ilcaMatch ? `ILCA ${ilcaMatch[1]}` : 'ILCA';
+      }
+      
+      // === DATUM ===
+      // Deutsches Format: 11.05.2025
+      let dateMatch = normalizedText.match(/(\d{1,2})\.(\d{1,2})\.(\d{4})/);
+      if (dateMatch) {
+        const months = ['', 'JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+        result.date = `${dateMatch[1]} ${months[parseInt(dateMatch[2])]} ${dateMatch[3]}`;
+      }
+      // Englisches Format: 27 APR 2025
+      if (!result.date) {
+        dateMatch = normalizedText.match(/(\d{1,2})\s*(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\s*(\d{4})/i);
+        if (dateMatch) {
+          result.date = `${dateMatch[1]} ${dateMatch[2].toUpperCase()} ${dateMatch[3]}`;
+        }
+      }
+      
+      // === WETTFAHRTEN ===
+      const raceHeaders = normalizedText.match(/R(\d+)/g);
+      if (raceHeaders) {
+        const nums = raceHeaders.map(r => parseInt(r.slice(1))).filter(n => n > 0 && n < 15);
+        if (nums.length > 0) result.raceCount = Math.max(...nums);
+      }
+      
+      // === TEILNEHMER FINDEN ===
+      const userNumbers = (sailNumber || '').replace(/\D/g, '');
+      console.log('Looking for sail number:', sailNumber, '-> digits:', userNumbers);
+      
+      // Finde alle GER-Nummern mit Kontext
+      // Pattern: Zahl (Rang) + GER + Zahl (Segelnummer) + Name
+      const entries = [];
+      const gerPattern = /(\d{1,3})\s+GER\s*(\d{3,5})\s+([A-Za-zÄÖÜäöüß][A-Za-zÄÖÜäöüß\s\-]+?)(?=\s+[A-Z]{2,10}\s|\s+\d{1,3}\.\d|\s+\d{1,3}\s+\d{1,3}|\s+GER\s|\s*$)/gi;
+      
+      let match;
+      const seenSailNumbers = new Set();
+      
+      while ((match = gerPattern.exec(normalizedText)) !== null) {
+        const rank = parseInt(match[1]);
+        const sailNum = match[2];
+        const name = match[3].trim();
+        
+        if (rank > 0 && rank < 200 && !seenSailNumbers.has(sailNum)) {
+          seenSailNumbers.add(sailNum);
+          
+          const entry = {
+            rank,
+            sailNumber: 'GER ' + sailNum,
+            name: name.substring(0, 35),
+            club: '',
+            totalPoints: 0,
+            netPoints: 0
+          };
+          
+          entries.push(entry);
+          
+          // Check if this is our sailor
+          if (userNumbers && (sailNum === userNumbers || sailNum.endsWith(userNumbers) || userNumbers.endsWith(sailNum))) {
+            console.log('FOUND:', entry);
+            result.participant = entry;
+          }
+        }
+      }
+      
+      // Fallback: Einfach alle GER-Nummern sammeln
+      if (entries.length === 0) {
+        console.log('Fallback: Collecting all GER numbers...');
+        const simplePattern = /GER\s*(\d{3,5})/gi;
+        let idx = 0;
+        while ((match = simplePattern.exec(normalizedText)) !== null) {
+          const sailNum = match[1];
+          if (!seenSailNumbers.has(sailNum)) {
+            seenSailNumbers.add(sailNum);
+            idx++;
+            const entry = {
+              rank: idx,
+              sailNumber: 'GER ' + sailNum,
+              name: `Teilnehmer ${idx}`,
+              club: '',
+              totalPoints: 0,
+              netPoints: 0
+            };
+            entries.push(entry);
+            
+            if (userNumbers && (sailNum === userNumbers || sailNum.includes(userNumbers) || userNumbers.includes(sailNum))) {
+              result.participant = entry;
+            }
+          }
+        }
+      }
+      
+      result.allResults = entries.sort((a, b) => a.rank - b.rank);
+      result.totalParticipants = entries.length > 0 ? Math.max(...entries.map(e => e.rank)) : 0;
+      result.success = entries.length > 0;
+      
+      if (!result.regattaName) {
+        result.regattaName = result.boatClass ? `Regatta (${result.boatClass})` : 'Regatta';
+      }
+      
+      console.log('Result:', {
+        success: result.success,
+        regattaName: result.regattaName,
+        boatClass: result.boatClass,
+        participants: result.totalParticipants,
+        foundUser: !!result.participant
+      });
+      
+    } catch (err) {
+      console.error('Parse error:', err);
+    }
+    
+    return result;
+  };
+
+  // === PDF VERARBEITUNG ===
   const processPdfFile = async (file) => {
     if (!file) return;
     
@@ -92,31 +253,69 @@ function App() {
     setIsProcessing(true);
     setError(null);
     setPdfResult(null);
+    setDebugText('');
     
     try {
-      // PDF im Browser laden und Text extrahieren
       const arrayBuffer = await file.arrayBuffer();
+      
+      // PDF als Base64 speichern für später
+      const base64 = btoa(
+        new Uint8Array(arrayBuffer).reduce((data, byte) => data + String.fromCharCode(byte), '')
+      );
+      setCurrentPdfData(base64);
+      
+      // PDF Text extrahieren
       const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
       
       let fullText = '';
       for (let i = 1; i <= pdf.numPages; i++) {
         const page = await pdf.getPage(i);
         const textContent = await page.getTextContent();
-        const pageText = textContent.items.map(item => item.str).join(' ');
-        fullText += pageText + '\n';
+        
+        // Sortiere Items nach Position für bessere Textrekonstruktion
+        const items = textContent.items.sort((a, b) => {
+          const yDiff = b.transform[5] - a.transform[5]; // Y-Position (umgekehrt)
+          if (Math.abs(yDiff) > 5) return yDiff;
+          return a.transform[4] - b.transform[4]; // X-Position
+        });
+        
+        let lastY = null;
+        for (const item of items) {
+          const y = Math.round(item.transform[5]);
+          if (lastY !== null && Math.abs(y - lastY) > 5) {
+            fullText += '\n';
+          }
+          fullText += item.str + ' ';
+          lastY = y;
+        }
+        fullText += '\n\n';
       }
       
-      console.log('Extracted text length:', fullText.length);
-      console.log('First 1500 chars:', fullText.substring(0, 1500));
+      console.log('Extracted text (first 2000 chars):', fullText.substring(0, 2000));
+      setDebugText(fullText.substring(0, 3000));
       
-      // Parse the text
+      // Parse
       const result = parseRegattaPDF(fullText, boatData.segelnummer);
       
+      // Duplikat-Prüfung
+      if (result.success) {
+        const isDuplicate = regatten.some(r => 
+          r.regattaName === result.regattaName && 
+          r.boatClass === result.boatClass &&
+          r.date === result.date
+        );
+        
+        if (isDuplicate) {
+          setError(`Diese Regatta "${result.regattaName}" ist bereits in deiner Liste!`);
+          setPdfResult(result);
+          return;
+        }
+      }
+      
+      setPdfResult(result);
+      
       if (!result.success) {
-        // Zeige was wir haben und biete manuelle Eingabe an
-        setPdfResult(result);
-        setError(`PDF wurde gelesen, aber nicht alle Daten erkannt. Bitte prüfe die Daten oder nutze "Manuell eingeben".`);
-        // Vorausfüllen der manuellen Eingabe mit gefundenen Daten
+        setError('PDF konnte nicht vollständig gelesen werden. Nutze "Manuell eingeben" oder prüfe die Debug-Ausgabe unten.');
         setManualData(prev => ({
           ...prev,
           regattaName: result.regattaName || '',
@@ -125,32 +324,26 @@ function App() {
           totalParticipants: result.totalParticipants ? String(result.totalParticipants) : '',
           raceCount: result.raceCount ? String(result.raceCount) : ''
         }));
-        return;
-      }
-      
-      setPdfResult(result);
-      
-      if (!result.participant) {
-        setError(`Segelnummer "${boatData.segelnummer}" wurde nicht in der Ergebnisliste gefunden. Bitte prüfe die Segelnummer in den Einstellungen.`);
+      } else if (!result.participant) {
+        setError(`Segelnummer "${boatData.segelnummer}" nicht gefunden. Prüfe die Einstellungen.`);
       } else {
         setSuccess(`${result.participant.name} gefunden: Platz ${result.participant.rank} von ${result.totalParticipants}`);
       }
       
     } catch (err) {
-      console.error('PDF Upload Error:', err);
-      setError(err.message);
+      console.error('PDF Error:', err);
+      setError('Fehler beim Lesen der PDF: ' + err.message);
     } finally {
       setIsProcessing(false);
     }
   };
 
-  const handlePdfUpload = async (event) => {
-    const file = event.target.files?.[0];
+  const handlePdfUpload = async (e) => {
+    const file = e.target.files?.[0];
     await processPdfFile(file);
-    event.target.value = ''; // Reset file input
+    e.target.value = '';
   };
 
-  // Drag & Drop handlers
   const handleDragOver = (e) => {
     e.preventDefault();
     e.stopPropagation();
@@ -167,239 +360,49 @@ function App() {
     e.preventDefault();
     e.stopPropagation();
     setIsDragging(false);
-    
     const file = e.dataTransfer.files?.[0];
     await processPdfFile(file);
   };
 
-  // PDF Text Parser (im Browser) - Unterstützt verschiedene Formate
-  const parseRegattaPDF = (text, sailNumber) => {
-    const result = {
-      success: false,
-      regattaName: '',
-      boatClass: '',
-      date: '',
-      raceCount: 0,
-      totalParticipants: 0,
-      participant: null,
-      allResults: [],
-      rawText: text.substring(0, 500)
-    };
-
-    try {
-      console.log('=== PDF PARSING START ===');
-      console.log('Text length:', text.length);
-      
-      // === REGATTA-NAME FINDEN ===
-      // Methode 1: Bekannte Muster suchen (Preis, Pokal, Cup, etc.)
-      const namePatterns = [
-        /([A-Za-zäöüÄÖÜß\-]+(?:[\s\-][A-Za-zäöüÄÖÜß\-]+)*[\s\-]*(?:Preis|Pokal|Cup|Trophy|Meisterschaft|Regatta|Festival|Open|Week)[\s\-]*\d{4})/i,
-        /([A-Za-zäöüÄÖÜß\-]+(?:[\s\-][A-Za-zäöüÄÖÜß\-]+)*[\s\-]*\d{4}[\s\-]*-[\s\-]*Opti[mist]*\s*[ABC]?)/i,
-      ];
-      
-      for (const pattern of namePatterns) {
-        const match = text.match(pattern);
-        if (match) {
-          result.regattaName = match[1].trim().replace(/\s+/g, ' ');
-          console.log('Found regatta name via pattern:', result.regattaName);
-          break;
-        }
-      }
-      
-      // Methode 2: Nach manage2sail.com suchen
-      if (!result.regattaName) {
-        const m2sMatch = text.match(/manage2sail\.com\s+([^\n]+?)(?:\s+Overall|\s+Ergebnisse)/i);
-        if (m2sMatch) {
-          result.regattaName = m2sMatch[1].trim();
-          console.log('Found regatta name via m2s:', result.regattaName);
-        }
-      }
-      
-      // === BOOTSKLASSE ===
-      const classPatterns = [
-        /Opti(?:mist)?\s*B/i, /Opti(?:mist)?\s*A/i, /Opti(?:mist)?\s*C/i, 
-        /Optimist/i, /420er/i, /420/i, /Laser/i, 
-        /ILCA\s*4/i, /ILCA\s*6/i, /ILCA\s*7/i,
-        /29er/i, /Europe/i, /Pirat/i, /Cadet/i
-      ];
-      for (const pattern of classPatterns) {
-        const match = text.match(pattern);
-        if (match) {
-          result.boatClass = match[0].replace(/\s+/g, ' ').trim();
-          console.log('Found boat class:', result.boatClass);
-          break;
-        }
-      }
-      
-      // === DATUM ===
-      // Format 1: "27 APR 2025"
-      let dateMatch = text.match(/(\d{1,2})[\.\s]*(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)[\.\s]*(\d{4})/i);
-      if (dateMatch) {
-        result.date = `${dateMatch[1]} ${dateMatch[2].toUpperCase()} ${dateMatch[3]}`;
-      }
-      // Format 2: "11.05.2025" (deutsch)
-      if (!result.date) {
-        dateMatch = text.match(/(\d{1,2})\.(\d{1,2})\.(\d{4})/);
-        if (dateMatch) {
-          const months = ['', 'JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
-          result.date = `${dateMatch[1]} ${months[parseInt(dateMatch[2])]} ${dateMatch[3]}`;
-        }
-      }
-      console.log('Found date:', result.date);
-      
-      // === WETTFAHRTEN ===
-      const raceMatches = text.match(/\bR(\d+)\b/g);
-      if (raceMatches) {
-        const raceNumbers = raceMatches.map(r => parseInt(r.replace('R', ''))).filter(n => !isNaN(n) && n > 0 && n < 20);
-        if (raceNumbers.length > 0) {
-          result.raceCount = Math.max(...raceNumbers);
-        }
-      }
-      console.log('Found race count:', result.raceCount);
-      
-      // === TEILNEHMER PARSEN ===
-      const normalizeSN = (sn) => sn.replace(/[\s\-\.]+/g, '').toUpperCase();
-      const userSNNorm = normalizeSN(sailNumber || '');
-      const userSNNumbers = (sailNumber || '').replace(/\D/g, '');
-      
-      console.log('Looking for sail number:', sailNumber, '-> numbers only:', userSNNumbers);
-      
-      // Finde alle GER + Nummer Kombinationen
-      const allGerNumbers = [];
-      const gerPattern = /GER\s*(\d{3,5})/gi;
-      let gerMatch;
-      while ((gerMatch = gerPattern.exec(text)) !== null) {
-        const num = gerMatch[1];
-        if (!allGerNumbers.includes(num)) {
-          allGerNumbers.push(num);
-        }
-      }
-      console.log('Found GER numbers:', allGerNumbers.length, allGerNumbers.slice(0, 10));
-      
-      // Für jede Segelnummer, finde den Rang
-      const seenSailNumbers = new Set();
-      let maxRank = 0;
-      
-      for (const sailNumDigits of allGerNumbers) {
-        if (seenSailNumbers.has(sailNumDigits)) continue;
-        seenSailNumbers.add(sailNumDigits);
-        
-        // Suche nach einem Rang vor dieser Segelnummer
-        // Pattern: Nummer (1-3 Ziffern) + Leerzeichen + GER + diese Segelnummer
-        const rankPattern = new RegExp(`(\\d{1,3})\\s+GER\\s*${sailNumDigits}\\b`, 'i');
-        const rankMatch = text.match(rankPattern);
-        
-        let rank = 0;
-        if (rankMatch) {
-          rank = parseInt(rankMatch[1]);
-          if (rank > 200) rank = 0; // Ungültiger Rang
-        }
-        
-        // Fallback: Verwende Position in der Liste
-        if (rank === 0) {
-          rank = result.allResults.length + 1;
-        }
-        
-        if (rank > maxRank) maxRank = rank;
-        
-        // Versuche den Namen zu finden
-        const namePattern = new RegExp(`GER\\s*${sailNumDigits}\\s+([A-Za-zÄÖÜäöüß][A-Za-zÄÖÜäöüß\\s\\-\\.]+?)(?:\\s+[A-Z]{2,10}\\s|\\s+\\d|$)`, 'i');
-        const nameMatch = text.match(namePattern);
-        const name = nameMatch ? nameMatch[1].trim().substring(0, 40) : `Teilnehmer ${rank}`;
-        
-        const sailNum = 'GER ' + sailNumDigits;
-        const entry = {
-          rank,
-          sailNumber: sailNum,
-          name,
-          club: '',
-          totalPoints: 0,
-          netPoints: 0
-        };
-        
-        result.allResults.push(entry);
-        
-        // Prüfe ob dies der gesuchte Teilnehmer ist
-        if (userSNNumbers && (
-            sailNumDigits === userSNNumbers ||
-            sailNumDigits.endsWith(userSNNumbers) ||
-            userSNNumbers.endsWith(sailNumDigits)
-        )) {
-          console.log('MATCH FOUND:', sailNum, 'rank:', rank, 'name:', name);
-          result.participant = entry;
-        }
-      }
-      
-      // Sortiere nach Rang
-      result.allResults.sort((a, b) => a.rank - b.rank);
-      
-      result.totalParticipants = maxRank || result.allResults.length;
-      result.success = result.allResults.length > 0;
-      
-      // Wenn kein Regatta-Name gefunden, nutze Bootsklasse oder generischen Namen
-      if (!result.regattaName && result.boatClass) {
-        result.regattaName = `Regatta (${result.boatClass})`;
-      }
-      if (!result.regattaName) {
-        result.regattaName = 'Regatta';
-      }
-      
-      console.log('=== PARSE RESULT ===');
-      console.log('Success:', result.success);
-      console.log('Regatta:', result.regattaName);
-      console.log('Class:', result.boatClass);
-      console.log('Date:', result.date);
-      console.log('Races:', result.raceCount);
-      console.log('Participants:', result.totalParticipants);
-      console.log('Found user:', !!result.participant);
-      console.log('All results count:', result.allResults.length);
-      
-    } catch (error) {
-      console.error('Parse error:', error);
-      result.error = error.message;
-    }
-    
-    return result;
-  };
-
-  // Add regatta from PDF result
+  // === REGATTA HINZUFÜGEN ===
   const addRegattaFromPdf = () => {
-    if (!pdfResult || !pdfResult.participant) {
-      setError('Keine gültigen Daten zum Hinzufügen');
+    if (!pdfResult?.participant) {
+      setError('Keine gültigen Daten');
       return;
     }
     
-    // Check for duplicates
+    // Nochmal Duplikat-Check
     const isDuplicate = regatten.some(r => 
       r.regattaName === pdfResult.regattaName && 
       r.boatClass === pdfResult.boatClass
     );
     
     if (isDuplicate) {
-      setError('Diese Regatta ist bereits in der Liste');
+      setError('Diese Regatta ist bereits in der Liste!');
       return;
     }
     
     const newRegatta = {
       id: Date.now(),
       regattaName: pdfResult.regattaName,
-      boatClass: pdfResult.boatClass,
+      boatClass: pdfResult.boatClass || boatData.bootsklasse,
       date: pdfResult.date,
       placement: pdfResult.participant.rank,
       totalParticipants: pdfResult.totalParticipants,
-      raceCount: pdfResult.raceCount,
-      netPoints: pdfResult.participant.netPoints,
+      raceCount: pdfResult.raceCount || 0,
       sailorName: pdfResult.participant.name,
-      club: pdfResult.participant.club,
+      pdfData: currentPdfData, // PDF als Base64 speichern!
       addedAt: new Date().toISOString()
     };
     
     setRegatten(prev => [...prev, newRegatta]);
     setPdfResult(null);
+    setCurrentPdfData(null);
+    setDebugText('');
     setSuccess(`"${pdfResult.regattaName}" wurde hinzugefügt!`);
+    setActiveTab('list');
   };
 
-  // Add regatta manually
   const addRegattaManual = () => {
     const { regattaName, boatClass, date, placement, totalParticipants, raceCount } = manualData;
     
@@ -408,14 +411,12 @@ function App() {
       return;
     }
     
-    // Check for duplicates
     const isDuplicate = regatten.some(r => 
-      r.regattaName === regattaName && 
-      r.boatClass === boatClass
+      r.regattaName === regattaName && r.boatClass === (boatClass || boatData.bootsklasse)
     );
     
     if (isDuplicate) {
-      setError('Diese Regatta ist bereits in der Liste');
+      setError('Diese Regatta ist bereits in der Liste!');
       return;
     }
     
@@ -427,88 +428,67 @@ function App() {
       placement: parseInt(placement),
       totalParticipants: parseInt(totalParticipants),
       raceCount: parseInt(raceCount),
-      manage2sailUrl: manualData.manage2sailUrl,
+      sailorName: boatData.seglername,
+      pdfData: currentPdfData, // Falls PDF vorhanden
       addedAt: new Date().toISOString()
     };
     
     setRegatten(prev => [...prev, newRegatta]);
-    setManualData({
-      regattaName: '',
-      boatClass: '',
-      date: '',
-      placement: '',
-      totalParticipants: '',
-      raceCount: '',
-      manage2sailUrl: ''
-    });
+    setManualData({ regattaName: '', boatClass: '', date: '', placement: '', totalParticipants: '', raceCount: '' });
+    setPdfResult(null);
+    setCurrentPdfData(null);
     setSuccess(`"${regattaName}" wurde hinzugefügt!`);
+    setActiveTab('list');
   };
 
-  // Delete regatta
   const deleteRegatta = (id) => {
-    setRegatten(prev => prev.filter(r => r.id !== id));
+    if (confirm('Regatta wirklich löschen?')) {
+      setRegatten(prev => prev.filter(r => r.id !== id));
+    }
   };
 
-  // Format date for display
+  // === BERECHNUNGEN ===
   const formatDate = (dateStr) => {
     if (!dateStr) return '-';
-    // Handle "DD MMM YYYY" format
-    const months = {
-      'JAN': '01', 'FEB': '02', 'MAR': '03', 'APR': '04',
-      'MAY': '05', 'JUN': '06', 'JUL': '07', 'AUG': '08',
-      'SEP': '09', 'OCT': '10', 'NOV': '11', 'DEC': '12'
-    };
+    const months = { 'JAN': '01', 'FEB': '02', 'MAR': '03', 'APR': '04', 'MAY': '05', 'JUN': '06', 'JUL': '07', 'AUG': '08', 'SEP': '09', 'OCT': '10', 'NOV': '11', 'DEC': '12' };
     const match = dateStr.match(/(\d{1,2})\s+([A-Z]{3})\s+(\d{4})/i);
     if (match) {
-      const day = match[1].padStart(2, '0');
-      const month = months[match[2].toUpperCase()] || '01';
-      return `${day}.${month}.${match[3]}`;
+      return `${match[1].padStart(2, '0')}.${months[match[2].toUpperCase()]}.${match[3]}`;
     }
     return dateStr;
   };
 
-  // Calculate refund amount based on TSC rules
   const calculateRefund = (placement, participants, races) => {
     if (!placement || !participants || !races) return 0;
-    
-    // TSC Erstattungsregeln (Beispiel - anpassen nach echten Regeln)
     const percentile = (placement / participants) * 100;
-    
-    // Basis: Wettfahrten × Faktor
-    let baseFactor = 5; // €5 pro Wettfahrt Basis
-    
-    // Bonus für gute Platzierung
-    if (percentile <= 10) baseFactor = 10;
-    else if (percentile <= 25) baseFactor = 8;
-    else if (percentile <= 50) baseFactor = 6;
-    
-    return Math.round(races * baseFactor);
+    let factor = 5;
+    if (percentile <= 10) factor = 10;
+    else if (percentile <= 25) factor = 8;
+    else if (percentile <= 50) factor = 6;
+    return Math.round(races * factor);
   };
 
-  // Export functions
+  const totalRefund = regatten.reduce((sum, r) => 
+    sum + calculateRefund(r.placement, r.totalParticipants, r.raceCount), 0
+  );
+
+  // === EXPORT FUNKTIONEN ===
   const exportToCsv = () => {
     const headers = ['Regatta', 'Bootsklasse', 'Datum', 'Platzierung', 'Teilnehmer', 'Wettfahrten', 'Erstattung'];
     const rows = regatten.map(r => [
-      r.regattaName,
-      r.boatClass,
-      formatDate(r.date),
-      r.placement,
-      r.totalParticipants,
-      r.raceCount,
+      r.regattaName, r.boatClass, formatDate(r.date),
+      r.placement, r.totalParticipants, r.raceCount,
       calculateRefund(r.placement, r.totalParticipants, r.raceCount) + '€'
     ]);
-    
     const csv = [headers, ...rows].map(row => row.join(';')).join('\n');
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
+    const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' });
     const a = document.createElement('a');
-    a.href = url;
+    a.href = URL.createObjectURL(blob);
     a.download = `TSC_Startgeld_${new Date().toISOString().split('T')[0]}.csv`;
     a.click();
   };
 
-  // PDF-Erstattungsantrag generieren
-  const exportToPdf = () => {
+  const exportToPdf = async () => {
     if (regatten.length === 0) {
       setError('Keine Regatten zum Exportieren');
       return;
@@ -531,21 +511,15 @@ function App() {
     let y = 45;
     
     doc.text(`Datum: ${new Date().toLocaleDateString('de-DE')}`, 15, y);
-    y += 10;
-    
+    y += 8;
     if (boatData.seglername) {
       doc.text(`Segler/in: ${boatData.seglername}`, 15, y);
-      y += 7;
+      y += 6;
     }
     if (boatData.segelnummer) {
       doc.text(`Segelnummer: ${boatData.segelnummer}`, 15, y);
-      y += 7;
+      y += 6;
     }
-    if (boatData.bootsklasse) {
-      doc.text(`Bootsklasse: ${boatData.bootsklasse}`, 15, y);
-      y += 7;
-    }
-    
     y += 5;
     
     // Tabelle
@@ -560,26 +534,11 @@ function App() {
     
     doc.autoTable({
       startY: y,
-      head: [['Regatta', 'Klasse', 'Datum', 'Platzierung', 'Wettfahrten', 'Erstattung']],
+      head: [['Regatta', 'Klasse', 'Datum', 'Platz', 'Wettf.', 'Erstattung']],
       body: tableData,
       theme: 'grid',
-      headStyles: { 
-        fillColor: [0, 82, 147],
-        textColor: 255,
-        fontStyle: 'bold'
-      },
-      styles: { 
-        fontSize: 9,
-        cellPadding: 3
-      },
-      columnStyles: {
-        0: { cellWidth: 55 },
-        1: { cellWidth: 25 },
-        2: { cellWidth: 25 },
-        3: { cellWidth: 25 },
-        4: { cellWidth: 25 },
-        5: { cellWidth: 25 }
-      }
+      headStyles: { fillColor: [0, 82, 147], textColor: 255, fontStyle: 'bold' },
+      styles: { fontSize: 9, cellPadding: 2 }
     });
     
     // Summe
@@ -589,42 +548,70 @@ function App() {
     doc.text(`Gesamt-Erstattung: ${totalRefund} EUR`, pageWidth - 15, finalY, { align: 'right' });
     
     // Bankverbindung
-    if (boatData.iban || boatData.kontoinhaber) {
+    if (boatData.iban) {
       doc.setFontSize(10);
       doc.setFont('helvetica', 'normal');
-      let bankY = finalY + 15;
-      doc.text('Bankverbindung:', 15, bankY);
-      bankY += 7;
+      doc.text(`IBAN: ${boatData.iban}`, 15, finalY + 15);
       if (boatData.kontoinhaber) {
-        doc.text(`Kontoinhaber: ${boatData.kontoinhaber}`, 15, bankY);
-        bankY += 6;
-      }
-      if (boatData.iban) {
-        doc.text(`IBAN: ${boatData.iban}`, 15, bankY);
+        doc.text(`Kontoinhaber: ${boatData.kontoinhaber}`, 15, finalY + 21);
       }
     }
     
     // Unterschrift
-    const signY = doc.internal.pageSize.getHeight() - 40;
     doc.setFontSize(9);
-    doc.text('_'.repeat(40), 15, signY);
-    doc.text('Datum, Unterschrift', 15, signY + 5);
+    doc.text('_'.repeat(40), 15, doc.internal.pageSize.getHeight() - 35);
+    doc.text('Datum, Unterschrift', 15, doc.internal.pageSize.getHeight() - 30);
     
-    // Footer
-    doc.setFontSize(8);
-    doc.setTextColor(128);
-    doc.text(`Erstellt am ${new Date().toLocaleString('de-DE')} mit TSC Startgeld-App`, pageWidth / 2, doc.internal.pageSize.getHeight() - 10, { align: 'center' });
+    // Anhänge: PDFs der Regatten
+    const regattasWithPdf = regatten.filter(r => r.pdfData);
+    if (regattasWithPdf.length > 0) {
+      doc.setFontSize(8);
+      doc.text(`Anlagen: ${regattasWithPdf.length} Ergebnisliste(n) im Anhang`, 15, doc.internal.pageSize.getHeight() - 15);
+      
+      // Füge jede PDF als neue Seiten hinzu
+      for (const regatta of regattasWithPdf) {
+        try {
+          const pdfBytes = Uint8Array.from(atob(regatta.pdfData), c => c.charCodeAt(0));
+          const attachedPdf = await pdfjsLib.getDocument({ data: pdfBytes }).promise;
+          
+          for (let i = 1; i <= attachedPdf.numPages; i++) {
+            doc.addPage();
+            const page = await attachedPdf.getPage(i);
+            const viewport = page.getViewport({ scale: 1.5 });
+            
+            const canvas = document.createElement('canvas');
+            canvas.width = viewport.width;
+            canvas.height = viewport.height;
+            const ctx = canvas.getContext('2d');
+            
+            await page.render({ canvasContext: ctx, viewport }).promise;
+            
+            const imgData = canvas.toDataURL('image/jpeg', 0.8);
+            const pdfWidth = doc.internal.pageSize.getWidth() - 20;
+            const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
+            
+            doc.addImage(imgData, 'JPEG', 10, 10, pdfWidth, Math.min(pdfHeight, doc.internal.pageSize.getHeight() - 20));
+          }
+        } catch (err) {
+          console.error('Error adding PDF attachment:', err);
+        }
+      }
+    }
     
-    // Download
     doc.save(`TSC_Erstattungsantrag_${new Date().toISOString().split('T')[0]}.pdf`);
-    setSuccess('PDF-Antrag wurde erstellt!');
+    setSuccess('PDF-Antrag mit Anlagen wurde erstellt!');
   };
 
-  // Total refund
-  const totalRefund = regatten.reduce((sum, r) => 
-    sum + calculateRefund(r.placement, r.totalParticipants, r.raceCount), 0
-  );
+  // === PDF VORSCHAU ===
+  const viewPdf = (pdfData) => {
+    const pdfBlob = new Blob(
+      [Uint8Array.from(atob(pdfData), c => c.charCodeAt(0))],
+      { type: 'application/pdf' }
+    );
+    window.open(URL.createObjectURL(pdfBlob), '_blank');
+  };
 
+  // === RENDER ===
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-900 via-blue-800 to-cyan-700">
       {/* Header */}
@@ -648,14 +635,14 @@ function App() {
         </div>
       </header>
 
-      {/* Navigation Tabs */}
+      {/* Tabs */}
       <nav className="bg-white/5 border-b border-white/10">
         <div className="max-w-4xl mx-auto px-4">
           <div className="flex gap-1">
             {[
-              { id: 'add', label: '➕ Hinzufügen', icon: '📄' },
-              { id: 'list', label: `📋 Liste (${regatten.length})`, icon: '📋' },
-              { id: 'settings', label: '⚙️ Einstellungen', icon: '⚙️' }
+              { id: 'add', label: '➕ Hinzufügen' },
+              { id: 'list', label: `📋 Liste (${regatten.length})` },
+              { id: 'settings', label: '⚙️ Einstellungen' }
             ].map(tab => (
               <button
                 key={tab.id}
@@ -676,53 +663,49 @@ function App() {
       {/* Messages */}
       <div className="max-w-4xl mx-auto px-4 mt-4">
         {error && (
-          <div className="bg-red-500/20 border border-red-400/50 text-red-100 px-4 py-3 rounded-lg mb-4 flex items-start gap-3">
-            <span className="text-xl">⚠️</span>
-            <div>{error}</div>
+          <div className="bg-red-500/20 border border-red-400/30 rounded-lg p-4 mb-4 flex items-start gap-3">
+            <span className="text-red-300 text-xl">⚠️</span>
+            <div className="text-red-200 flex-1">{error}</div>
+            <button onClick={() => setError(null)} className="text-red-300 hover:text-white">✕</button>
           </div>
         )}
         {success && (
-          <div className="bg-green-500/20 border border-green-400/50 text-green-100 px-4 py-3 rounded-lg mb-4 flex items-start gap-3">
-            <span className="text-xl">✅</span>
-            <div>{success}</div>
+          <div className="bg-green-500/20 border border-green-400/30 rounded-lg p-4 mb-4 flex items-start gap-3">
+            <span className="text-green-300 text-xl">✅</span>
+            <div className="text-green-200 flex-1">{success}</div>
           </div>
         )}
       </div>
 
-      {/* Main Content */}
+      {/* Content */}
       <main className="max-w-4xl mx-auto px-4 py-6">
         
         {/* === ADD TAB === */}
         {activeTab === 'add' && (
           <div className="space-y-6">
             
-            {/* PDF Upload Section */}
+            {/* PDF Upload */}
             <div className="bg-white/10 backdrop-blur-sm rounded-xl p-6 border border-white/20">
-              <h2 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+              <h3 className="text-lg font-semibold text-white mb-2 flex items-center gap-2">
                 📄 Ergebnisliste hochladen
-              </h2>
-              
+              </h3>
               <p className="text-blue-200 text-sm mb-4">
-                Lade die PDF-Ergebnisliste von manage2sail hoch. Die App extrahiert automatisch alle Daten.
+                Lade die PDF-Ergebnisliste von manage2sail hoch.
               </p>
               
-              {/* Upload Area */}
               <div
                 onDragOver={handleDragOver}
                 onDragLeave={handleDragLeave}
                 onDrop={handleDrop}
-                className={`
-                  border-2 border-dashed rounded-xl p-8 text-center transition-all
-                  ${isDragging 
-                    ? 'border-cyan-400 bg-cyan-500/20 scale-105' 
-                    : isProcessing 
-                      ? 'border-cyan-400 bg-cyan-500/10' 
-                      : 'border-white/30 hover:border-cyan-400 hover:bg-white/5'}
-                `}
+                className={`border-2 border-dashed rounded-xl p-8 text-center transition-all cursor-pointer
+                  ${isDragging ? 'border-cyan-400 bg-cyan-500/20 scale-102' 
+                    : isProcessing ? 'border-cyan-400 bg-cyan-500/10'
+                    : 'border-white/30 hover:border-cyan-400 hover:bg-white/5'}`}
+                onClick={() => !isProcessing && document.getElementById('pdf-input').click()}
               >
                 <input
                   type="file"
-                  id="pdf-upload"
+                  id="pdf-input"
                   accept=".pdf"
                   onChange={handlePdfUpload}
                   disabled={isProcessing}
@@ -739,36 +722,19 @@ function App() {
                     <div className="font-medium">PDF hier ablegen</div>
                   </div>
                 ) : (
-                  <label htmlFor="pdf-upload" className="cursor-pointer block">
-                    <div className="text-blue-200">
-                      <div className="text-4xl mb-2">📤</div>
-                      <div className="font-medium text-white">PDF-Datei auswählen</div>
-                      <div className="text-sm mt-1">oder hierher ziehen</div>
-                    </div>
-                  </label>
+                  <div className="text-blue-200">
+                    <div className="text-4xl mb-2">📤</div>
+                    <div className="font-medium text-white">PDF-Datei auswählen</div>
+                    <div className="text-sm mt-1">oder hierher ziehen</div>
+                  </div>
                 )}
               </div>
-              
-              {/* How to get PDF */}
-              <details className="mt-4 text-sm">
-                <summary className="text-cyan-300 cursor-pointer hover:text-cyan-200">
-                  Wie bekomme ich die PDF?
-                </summary>
-                <div className="mt-2 text-blue-200 bg-white/5 rounded-lg p-3 space-y-2">
-                  <p>1. Öffne <a href="https://manage2sail.com" target="_blank" className="text-cyan-300 underline">manage2sail.com</a></p>
-                  <p>2. Suche deine Regatta und öffne die Ergebnisse</p>
-                  <p>3. Klicke auf "Herunterladen" bei den Gesamtergebnissen</p>
-                  <p>4. Lade die PDF hier hoch</p>
-                </div>
-              </details>
             </div>
 
-            {/* PDF Result Preview */}
+            {/* PDF Result */}
             {pdfResult && (
               <div className="bg-white/10 backdrop-blur-sm rounded-xl p-6 border border-white/20">
-                <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-                  ✨ Extrahierte Daten
-                </h3>
+                <h3 className="text-lg font-semibold text-white mb-4">✨ Extrahierte Daten</h3>
                 
                 <div className="grid grid-cols-2 gap-4 mb-4">
                   <div>
@@ -795,14 +761,10 @@ function App() {
                       <div>
                         <div className="text-green-300 text-sm">Deine Platzierung</div>
                         <div className="text-2xl font-bold text-white">
-                          Platz {pdfResult.participant.rank} 
-                          <span className="text-lg font-normal text-green-200">
-                            {' '}von {pdfResult.totalParticipants}
-                          </span>
+                          Platz {pdfResult.participant.rank}
+                          <span className="text-lg font-normal text-green-200"> von {pdfResult.totalParticipants}</span>
                         </div>
-                        <div className="text-green-200 text-sm mt-1">
-                          {pdfResult.participant.name} • {pdfResult.participant.club}
-                        </div>
+                        <div className="text-green-200 text-sm mt-1">{pdfResult.participant.name}</div>
                       </div>
                       <div className="text-right">
                         <div className="text-green-300 text-sm">Erstattung ca.</div>
@@ -816,26 +778,21 @@ function App() {
                   <div className="bg-yellow-500/20 border border-yellow-400/30 rounded-lg p-4 mb-4">
                     <div className="text-yellow-200">
                       ⚠️ Segelnummer "{boatData.segelnummer}" nicht gefunden.
-                      <br />
-                      <span className="text-sm">Prüfe die Segelnummer in den Einstellungen oder füge die Regatta manuell hinzu.</span>
                     </div>
                   </div>
                 )}
                 
                 <div className="flex gap-3">
+                  {pdfResult.participant && (
+                    <button
+                      onClick={addRegattaFromPdf}
+                      className="flex-1 py-3 px-4 rounded-lg font-medium bg-green-500 hover:bg-green-400 text-white transition-all"
+                    >
+                      ✅ Zur Liste hinzufügen
+                    </button>
+                  )}
                   <button
-                    onClick={addRegattaFromPdf}
-                    disabled={!pdfResult.participant}
-                    className={`flex-1 py-3 px-4 rounded-lg font-medium transition-all ${
-                      pdfResult.participant
-                        ? 'bg-cyan-500 hover:bg-cyan-400 text-white'
-                        : 'bg-gray-500/50 text-gray-300 cursor-not-allowed'
-                    }`}
-                  >
-                    ✅ Zur Liste hinzufügen
-                  </button>
-                  <button
-                    onClick={() => setPdfResult(null)}
+                    onClick={() => { setPdfResult(null); setDebugText(''); }}
                     className="py-3 px-4 rounded-lg font-medium bg-white/10 hover:bg-white/20 text-white transition-all"
                   >
                     ✕ Verwerfen
@@ -844,22 +801,29 @@ function App() {
               </div>
             )}
 
-            {/* Manual Entry Toggle */}
+            {/* Debug Text */}
+            {debugText && (
+              <details className="bg-white/5 rounded-xl p-4 border border-white/10">
+                <summary className="text-cyan-300 cursor-pointer">🔍 Debug: Extrahierter Text</summary>
+                <pre className="mt-2 text-xs text-blue-200 whitespace-pre-wrap max-h-60 overflow-auto bg-black/30 p-3 rounded">
+                  {debugText}
+                </pre>
+              </details>
+            )}
+
+            {/* Manual Entry */}
             <div className="text-center">
               <button
                 onClick={() => setManualMode(!manualMode)}
                 className="text-cyan-300 hover:text-cyan-200 text-sm underline"
               >
-                {manualMode ? '← Zurück zum PDF-Upload' : 'Manuell eingeben →'}
+                {manualMode ? '← Zurück' : 'Manuell eingeben →'}
               </button>
             </div>
 
-            {/* Manual Entry Form */}
             {manualMode && (
               <div className="bg-white/10 backdrop-blur-sm rounded-xl p-6 border border-white/20">
-                <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-                  ✏️ Manuelle Eingabe
-                </h3>
+                <h3 className="text-lg font-semibold text-white mb-4">✏️ Manuelle Eingabe</h3>
                 
                 <div className="grid grid-cols-2 gap-4">
                   <div className="col-span-2">
@@ -868,8 +832,7 @@ function App() {
                       type="text"
                       value={manualData.regattaName}
                       onChange={e => setManualData(d => ({ ...d, regattaName: e.target.value }))}
-                      placeholder="z.B. Rahnsdorfer Opti-Pokal"
-                      className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white placeholder-blue-300/50 focus:outline-none focus:border-cyan-400"
+                      className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white"
                     />
                   </div>
                   <div>
@@ -878,8 +841,7 @@ function App() {
                       type="text"
                       value={manualData.boatClass}
                       onChange={e => setManualData(d => ({ ...d, boatClass: e.target.value }))}
-                      placeholder="z.B. Optimist B"
-                      className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white placeholder-blue-300/50 focus:outline-none focus:border-cyan-400"
+                      className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white"
                     />
                   </div>
                   <div>
@@ -888,7 +850,7 @@ function App() {
                       type="date"
                       value={manualData.date}
                       onChange={e => setManualData(d => ({ ...d, date: e.target.value }))}
-                      className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white focus:outline-none focus:border-cyan-400"
+                      className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white"
                     />
                   </div>
                   <div>
@@ -897,9 +859,7 @@ function App() {
                       type="number"
                       value={manualData.placement}
                       onChange={e => setManualData(d => ({ ...d, placement: e.target.value }))}
-                      placeholder="z.B. 5"
-                      min="1"
-                      className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white placeholder-blue-300/50 focus:outline-none focus:border-cyan-400"
+                      className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white"
                     />
                   </div>
                   <div>
@@ -908,9 +868,7 @@ function App() {
                       type="number"
                       value={manualData.totalParticipants}
                       onChange={e => setManualData(d => ({ ...d, totalParticipants: e.target.value }))}
-                      placeholder="z.B. 50"
-                      min="1"
-                      className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white placeholder-blue-300/50 focus:outline-none focus:border-cyan-400"
+                      className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white"
                     />
                   </div>
                   <div>
@@ -919,28 +877,16 @@ function App() {
                       type="number"
                       value={manualData.raceCount}
                       onChange={e => setManualData(d => ({ ...d, raceCount: e.target.value }))}
-                      placeholder="z.B. 5"
-                      min="1"
-                      className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white placeholder-blue-300/50 focus:outline-none focus:border-cyan-400"
-                    />
-                  </div>
-                  <div className="col-span-2">
-                    <label className="block text-blue-200 text-sm mb-1">manage2sail URL (optional)</label>
-                    <input
-                      type="url"
-                      value={manualData.manage2sailUrl}
-                      onChange={e => setManualData(d => ({ ...d, manage2sailUrl: e.target.value }))}
-                      placeholder="https://manage2sail.com/..."
-                      className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white placeholder-blue-300/50 focus:outline-none focus:border-cyan-400"
+                      className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white"
                     />
                   </div>
                 </div>
                 
                 <button
                   onClick={addRegattaManual}
-                  className="w-full mt-4 py-3 px-4 rounded-lg font-medium bg-cyan-500 hover:bg-cyan-400 text-white transition-all"
+                  className="w-full mt-4 py-3 px-4 rounded-lg font-medium bg-cyan-500 hover:bg-cyan-400 text-white"
                 >
-                  ✅ Zur Liste hinzufügen
+                  ✅ Hinzufügen
                 </button>
               </div>
             )}
@@ -951,7 +897,6 @@ function App() {
         {activeTab === 'list' && (
           <div className="space-y-4">
             
-            {/* Summary */}
             {regatten.length > 0 && (
               <div className="bg-white/10 backdrop-blur-sm rounded-xl p-4 border border-white/20">
                 <div className="flex items-center justify-between mb-4">
@@ -959,17 +904,20 @@ function App() {
                     <span className="text-blue-200">Gesamt-Erstattung:</span>
                     <span className="text-2xl font-bold text-white ml-2">{totalRefund}€</span>
                   </div>
+                  <div className="text-sm text-blue-200">
+                    {regatten.filter(r => r.pdfData).length} von {regatten.length} mit PDF
+                  </div>
                 </div>
                 <div className="flex gap-2">
                   <button
                     onClick={exportToPdf}
-                    className="flex-1 px-4 py-2 bg-cyan-500 hover:bg-cyan-400 text-white rounded-lg font-medium transition-all flex items-center justify-center gap-2"
+                    className="flex-1 px-4 py-2 bg-cyan-500 hover:bg-cyan-400 text-white rounded-lg font-medium flex items-center justify-center gap-2"
                   >
-                    📄 PDF-Antrag erstellen
+                    📄 PDF-Antrag mit Anlagen
                   </button>
                   <button
                     onClick={exportToCsv}
-                    className="px-4 py-2 bg-white/20 hover:bg-white/30 text-white rounded-lg font-medium transition-all"
+                    className="px-4 py-2 bg-white/20 hover:bg-white/30 text-white rounded-lg"
                   >
                     📥 CSV
                   </button>
@@ -977,59 +925,52 @@ function App() {
               </div>
             )}
 
-            {/* Regatta List */}
             {regatten.length === 0 ? (
               <div className="bg-white/10 backdrop-blur-sm rounded-xl p-8 border border-white/20 text-center">
                 <div className="text-4xl mb-3">📋</div>
                 <div className="text-white font-medium mb-2">Noch keine Regatten</div>
-                <div className="text-blue-200 text-sm">
-                  Lade eine PDF-Ergebnisliste hoch um zu starten
-                </div>
                 <button
                   onClick={() => setActiveTab('add')}
-                  className="mt-4 px-4 py-2 bg-cyan-500 hover:bg-cyan-400 text-white rounded-lg font-medium transition-all"
+                  className="mt-4 px-4 py-2 bg-cyan-500 hover:bg-cyan-400 text-white rounded-lg"
                 >
                   ➕ Regatta hinzufügen
                 </button>
               </div>
             ) : (
               <div className="space-y-3">
-                {regatten.map(regatta => (
-                  <div
-                    key={regatta.id}
-                    className="bg-white/10 backdrop-blur-sm rounded-xl p-4 border border-white/20"
-                  >
+                {regatten.map(r => (
+                  <div key={r.id} className="bg-white/10 backdrop-blur-sm rounded-xl p-4 border border-white/20">
                     <div className="flex items-start justify-between">
                       <div className="flex-1">
-                        <div className="flex items-center gap-2 mb-1">
-                          <span className="text-lg font-semibold text-white">{regatta.regattaName}</span>
-                          {regatta.boatClass && (
-                            <span className="px-2 py-0.5 bg-cyan-500/30 text-cyan-200 text-xs rounded">
-                              {regatta.boatClass}
-                            </span>
+                        <div className="flex items-center gap-2">
+                          <h4 className="text-white font-medium">{r.regattaName}</h4>
+                          {r.pdfData && (
+                            <button
+                              onClick={() => viewPdf(r.pdfData)}
+                              className="text-cyan-300 hover:text-cyan-200 text-xs px-2 py-0.5 bg-cyan-500/20 rounded"
+                            >
+                              📄 PDF
+                            </button>
                           )}
                         </div>
-                        <div className="flex flex-wrap gap-4 text-sm text-blue-200">
-                          <span>📅 {formatDate(regatta.date)}</span>
-                          <span>🏆 Platz {regatta.placement}/{regatta.totalParticipants}</span>
-                          <span>🚩 {regatta.raceCount} Wettfahrten</span>
+                        <div className="text-blue-200 text-sm mt-1">
+                          {r.boatClass} • {formatDate(r.date)} • {r.raceCount} Wettfahrten
                         </div>
                       </div>
-                      <div className="flex items-center gap-3">
-                        <div className="text-right">
-                          <div className="text-xs text-blue-300">Erstattung</div>
-                          <div className="text-xl font-bold text-cyan-300">
-                            {calculateRefund(regatta.placement, regatta.totalParticipants, regatta.raceCount)}€
-                          </div>
+                      <div className="text-right">
+                        <div className="text-white font-bold">
+                          Platz {r.placement}/{r.totalParticipants}
                         </div>
-                        <button
-                          onClick={() => deleteRegatta(regatta.id)}
-                          className="p-2 text-red-300 hover:text-red-200 hover:bg-red-500/20 rounded-lg transition-all"
-                          title="Löschen"
-                        >
-                          🗑️
-                        </button>
+                        <div className="text-cyan-300 font-medium">
+                          {calculateRefund(r.placement, r.totalParticipants, r.raceCount)}€
+                        </div>
                       </div>
+                      <button
+                        onClick={() => deleteRegatta(r.id)}
+                        className="ml-3 text-red-300 hover:text-red-200 p-1"
+                      >
+                        🗑️
+                      </button>
                     </div>
                   </div>
                 ))}
@@ -1040,114 +981,128 @@ function App() {
 
         {/* === SETTINGS TAB === */}
         {activeTab === 'settings' && (
-          <div className="bg-white/10 backdrop-blur-sm rounded-xl p-6 border border-white/20">
-            <h2 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-              ⚙️ Bootsdaten & Einstellungen
-            </h2>
-            
-            <div className="grid grid-cols-2 gap-4">
-              <div className="col-span-2 sm:col-span-1">
-                <label className="block text-blue-200 text-sm mb-1">Segelnummer *</label>
-                <input
-                  type="text"
-                  value={boatData.segelnummer}
-                  onChange={e => setBoatData(d => ({ ...d, segelnummer: e.target.value.toUpperCase() }))}
-                  placeholder="z.B. GER 13162"
-                  className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white placeholder-blue-300/50 focus:outline-none focus:border-cyan-400 font-mono"
-                />
-                <p className="text-blue-300/70 text-xs mt-1">Wird zum Finden in der PDF verwendet</p>
-              </div>
-              <div className="col-span-2 sm:col-span-1">
-                <label className="block text-blue-200 text-sm mb-1">Segler-Name</label>
-                <input
-                  type="text"
-                  value={boatData.seglername}
-                  onChange={e => setBoatData(d => ({ ...d, seglername: e.target.value }))}
-                  placeholder="z.B. Max Mustermann"
-                  className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white placeholder-blue-300/50 focus:outline-none focus:border-cyan-400"
-                />
-              </div>
-              <div className="col-span-2 sm:col-span-1">
-                <label className="block text-blue-200 text-sm mb-1">Bootsklasse</label>
-                <select
-                  value={boatData.bootsklasse}
-                  onChange={e => setBoatData(d => ({ ...d, bootsklasse: e.target.value }))}
-                  className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white focus:outline-none focus:border-cyan-400"
-                >
-                  <option value="Optimist">Optimist</option>
-                  <option value="420er">420er</option>
-                  <option value="Laser">Laser / ILCA</option>
-                  <option value="29er">29er</option>
-                  <option value="Europe">Europe</option>
-                  <option value="Pirat">Pirat</option>
-                  <option value="Andere">Andere</option>
-                </select>
-              </div>
-              <div className="col-span-2 sm:col-span-1">
-                <label className="block text-blue-200 text-sm mb-1">Kontoinhaber</label>
-                <input
-                  type="text"
-                  value={boatData.kontoinhaber}
-                  onChange={e => setBoatData(d => ({ ...d, kontoinhaber: e.target.value }))}
-                  placeholder="Name des Kontoinhabers"
-                  className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white placeholder-blue-300/50 focus:outline-none focus:border-cyan-400"
-                />
-              </div>
-              <div className="col-span-2">
-                <label className="block text-blue-200 text-sm mb-1">IBAN</label>
-                <input
-                  type="text"
-                  value={boatData.iban}
-                  onChange={e => setBoatData(d => ({ ...d, iban: e.target.value.toUpperCase().replace(/\s/g, '') }))}
-                  placeholder="DE..."
-                  className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white placeholder-blue-300/50 focus:outline-none focus:border-cyan-400 font-mono"
-                />
+          <div className="space-y-6">
+            <div className="bg-white/10 backdrop-blur-sm rounded-xl p-6 border border-white/20">
+              <h3 className="text-lg font-semibold text-white mb-4">🚤 Bootsdaten</h3>
+              
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-blue-200 text-sm mb-1">Segelnummer *</label>
+                  <input
+                    type="text"
+                    value={boatData.segelnummer}
+                    onChange={e => setBoatData(d => ({ ...d, segelnummer: e.target.value }))}
+                    placeholder="z.B. GER 13162"
+                    className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-blue-200 text-sm mb-1">Segler/in Name</label>
+                  <input
+                    type="text"
+                    value={boatData.seglername}
+                    onChange={e => setBoatData(d => ({ ...d, seglername: e.target.value }))}
+                    className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white"
+                  />
+                </div>
+                <div className="col-span-2">
+                  <label className="block text-blue-200 text-sm mb-1">Bootsklasse</label>
+                  <select
+                    value={boatData.bootsklasse}
+                    onChange={e => setBoatData(d => ({ ...d, bootsklasse: e.target.value }))}
+                    className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white"
+                  >
+                    <option value="Optimist">Optimist</option>
+                    <option value="420er">420er</option>
+                    <option value="ILCA 4">ILCA 4</option>
+                    <option value="ILCA 6">ILCA 6</option>
+                    <option value="29er">29er</option>
+                  </select>
+                </div>
               </div>
             </div>
-            
-            {/* Data Management */}
-            <div className="mt-6 pt-6 border-t border-white/20">
-              <h3 className="text-white font-medium mb-3">Datenverwaltung</h3>
-              <div className="flex flex-wrap gap-3">
+
+            <div className="bg-white/10 backdrop-blur-sm rounded-xl p-6 border border-white/20">
+              <h3 className="text-lg font-semibold text-white mb-4">🏦 Bankverbindung</h3>
+              
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-blue-200 text-sm mb-1">Kontoinhaber</label>
+                  <input
+                    type="text"
+                    value={boatData.kontoinhaber}
+                    onChange={e => setBoatData(d => ({ ...d, kontoinhaber: e.target.value }))}
+                    className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-blue-200 text-sm mb-1">IBAN</label>
+                  <input
+                    type="text"
+                    value={boatData.iban}
+                    onChange={e => setBoatData(d => ({ ...d, iban: e.target.value }))}
+                    placeholder="DE..."
+                    className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white font-mono"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-white/10 backdrop-blur-sm rounded-xl p-6 border border-white/20">
+              <h3 className="text-lg font-semibold text-white mb-4">💾 Datenverwaltung</h3>
+              
+              <div className="space-y-3">
+                <button
+                  onClick={() => {
+                    const data = { boatData, regatten, exportDate: new Date().toISOString() };
+                    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+                    const a = document.createElement('a');
+                    a.href = URL.createObjectURL(blob);
+                    a.download = `TSC_Backup_${new Date().toISOString().split('T')[0]}.json`;
+                    a.click();
+                  }}
+                  className="w-full py-2 px-4 bg-white/10 hover:bg-white/20 text-white rounded-lg"
+                >
+                  📦 Backup herunterladen
+                </button>
+                
+                <label className="block w-full py-2 px-4 bg-white/10 hover:bg-white/20 text-white rounded-lg text-center cursor-pointer">
+                  📂 Backup wiederherstellen
+                  <input
+                    type="file"
+                    accept=".json"
+                    className="hidden"
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      if (file) {
+                        const text = await file.text();
+                        const data = JSON.parse(text);
+                        if (data.boatData) setBoatData(data.boatData);
+                        if (data.regatten) setRegatten(data.regatten);
+                        setSuccess('Backup wiederhergestellt!');
+                      }
+                    }}
+                  />
+                </label>
+                
                 <button
                   onClick={() => {
                     if (confirm('Alle Regatten löschen?')) {
                       setRegatten([]);
-                      setSuccess('Alle Regatten wurden gelöscht');
+                      setSuccess('Alle Regatten gelöscht');
                     }
                   }}
-                  className="px-4 py-2 bg-red-500/20 hover:bg-red-500/30 text-red-200 rounded-lg transition-all"
+                  className="w-full py-2 px-4 bg-red-500/20 hover:bg-red-500/30 text-red-200 rounded-lg"
                 >
                   🗑️ Alle Regatten löschen
-                </button>
-                <button
-                  onClick={() => {
-                    const data = { boatData, regatten };
-                    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = `TSC_Backup_${new Date().toISOString().split('T')[0]}.json`;
-                    a.click();
-                  }}
-                  className="px-4 py-2 bg-white/10 hover:bg-white/20 text-white rounded-lg transition-all"
-                >
-                  💾 Backup erstellen
                 </button>
               </div>
             </div>
           </div>
         )}
       </main>
-
-      {/* Footer */}
-      <footer className="bg-white/5 border-t border-white/10 mt-8">
-        <div className="max-w-4xl mx-auto px-4 py-4 text-center text-blue-300/70 text-sm">
-          TSC Startgeld-Erstattung v4.0 • PDF-basiert • © 2025 Tegeler Segel-Club e.V.
-        </div>
-      </footer>
     </div>
   );
 }
 
-export default App
+export default App;
