@@ -183,13 +183,53 @@ function App() {
     invoiceAmount: ''
   });
 
-  // === PERSISTENZ ===
+  // === PERSISTENZ (OHNE PDF-Daten - die sind zu groß für localStorage) ===
+  
+  // Einmalig: Alte Daten mit PDFs löschen falls vorhanden
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('tsc-regatten-v6');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        // Prüfen ob alte Daten PDF-Daten enthalten
+        if (parsed.some(r => r.resultPdfData || r.invoicePdfData)) {
+          console.log('Entferne alte PDF-Daten aus localStorage...');
+          const cleaned = parsed.map(r => ({
+            ...r,
+            resultPdfData: null,
+            invoicePdfData: null
+          }));
+          localStorage.setItem('tsc-regatten-v6', JSON.stringify(cleaned));
+          setRegatten(cleaned);
+        }
+      }
+    } catch (e) {
+      console.error('Cleanup error:', e);
+      localStorage.removeItem('tsc-regatten-v6');
+    }
+  }, []);
+  
   useEffect(() => {
     localStorage.setItem('tsc-boat-data', JSON.stringify(boatData));
   }, [boatData]);
   
   useEffect(() => {
-    localStorage.setItem('tsc-regatten-v6', JSON.stringify(regatten));
+    // PDF-Daten entfernen vor dem Speichern (zu groß für localStorage)
+    const regattenToSave = regatten.map(r => ({
+      ...r,
+      resultPdfData: null,  // Nicht speichern
+      invoicePdfData: null  // Nicht speichern
+    }));
+    try {
+      localStorage.setItem('tsc-regatten-v6', JSON.stringify(regattenToSave));
+    } catch (e) {
+      console.error('localStorage error:', e);
+      // Falls immer noch zu groß, versuche ohne alte Einträge
+      if (e.name === 'QuotaExceededError') {
+        console.warn('localStorage voll - lösche alte Daten');
+        localStorage.removeItem('tsc-regatten-v6');
+      }
+    }
   }, [regatten]);
 
   // Clear messages
@@ -502,7 +542,7 @@ function App() {
     return result;
   };
 
-  // === ERGEBNISLISTE VERARBEITEN (EXAKT wie in v6-fixed) ===
+  // === ERGEBNISLISTE VERARBEITEN (mit OCR-Fallback) ===
   const processResultPdf = async (file) => {
     if (!file || !file.name.toLowerCase().endsWith('.pdf')) {
       setError('Bitte eine PDF-Datei auswählen');
@@ -526,18 +566,64 @@ function App() {
       const base64 = btoa(new Uint8Array(arrayBuffer).reduce((data, byte) => data + String.fromCharCode(byte), ''));
       setCurrentPdfData(base64);
       
-      const { text } = await extractTextFromPDF(arrayBuffer, true, 'Ergebnisliste: ');
-      setDebugText(text.substring(0, 5000));
+      // Erst direkte Textextraktion versuchen (OHNE OCR-Fallback)
+      let pdf;
+      try {
+        pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      } catch (e) {
+        pdf = await pdfjsLib.getDocument({ data: arrayBuffer, disableWorker: true }).promise;
+      }
       
-      if (text.trim().length < 50) {
+      let fullText = '';
+      for (let i = 1; i <= pdf.numPages; i++) {
+        try {
+          const page = await pdf.getPage(i);
+          const textContent = await page.getTextContent();
+          for (const item of textContent.items) {
+            if (item.str && item.str.trim()) {
+              fullText += item.str + ' ';
+            }
+          }
+          fullText += '\n';
+        } catch (e) {
+          console.error(`Error on page ${i}:`, e);
+        }
+      }
+      
+      console.log('Direct extraction text length:', fullText.length);
+      
+      // Parse mit direkt extrahiertem Text
+      let result = parseRegattaPDF(fullText, boatData.segelnummer);
+      
+      // Wenn keine Platzierung gefunden -> automatisch OCR versuchen
+      if (!result.participant && fullText.length < 500) {
+        console.log('Keine Platzierung gefunden und wenig Text - starte OCR...');
+        setOcrProgress({ status: 'Starte OCR-Texterkennung...', percent: 0 });
+        fullText = await performOCR(pdf, 'Ergebnisliste: ');
+        result = parseRegattaPDF(fullText, boatData.segelnummer);
+      } else if (!result.participant) {
+        // Text vorhanden aber keine Platzierung - auch OCR versuchen
+        console.log('Text extrahiert aber keine Platzierung gefunden - versuche OCR...');
+        setOcrProgress({ status: 'Platzierung nicht gefunden - starte OCR...', percent: 0 });
+        const ocrText = await performOCR(pdf, 'Ergebnisliste: ');
+        const ocrResult = parseRegattaPDF(ocrText, boatData.segelnummer);
+        
+        // Wenn OCR bessere Ergebnisse liefert, nutze diese
+        if (ocrResult.participant) {
+          result = ocrResult;
+          fullText = ocrText;
+        }
+      }
+      
+      setDebugText(fullText.substring(0, 5000));
+      
+      if (fullText.trim().length < 50) {
         setError('PDF konnte nicht gelesen werden.');
         return;
       }
       
-      const result = parseRegattaPDF(text, boatData.segelnummer);
-      
       // Duplikat-Check
-      if (result.success) {
+      if (result.success && result.regattaName) {
         const isDuplicate = regatten.some(r => 
           r.regattaName === result.regattaName && r.boatClass === result.boatClass
         );
@@ -553,9 +639,9 @@ function App() {
       if (!result.success) {
         setError('PDF konnte nicht vollständig gelesen werden.');
       } else if (!result.participant) {
-        setError(`Segelnummer "${boatData.segelnummer}" nicht gefunden.`);
+        setError(`Segelnummer "${boatData.segelnummer}" nicht gefunden - bitte Platzierung manuell eingeben.`);
       } else {
-        setSuccess(`${result.participant.name} gefunden: Platz ${result.participant.rank} von ${result.totalParticipants}`);
+        setSuccess(`${result.participant.name || 'Teilnehmer'} gefunden: Platz ${result.participant.rank} von ${result.totalParticipants}`);
       }
       
     } catch (err) {
@@ -667,8 +753,9 @@ function App() {
         totalParticipants: totalParticipants || 0,
         raceCount: pdfResult.raceCount || 0,
         sailorName: pdfResult.participant?.name || boatData.seglername,
-        resultPdfData: currentPdfData || null,
-        invoicePdfData: currentInvoiceData || null,
+        // PDF-Daten werden NICHT mehr gespeichert (localStorage Limit)
+        resultPdfData: null,
+        invoicePdfData: null,
         invoiceAmount: amount,
         addedAt: new Date().toISOString()
       };
@@ -719,8 +806,9 @@ function App() {
       totalParticipants: parseInt(totalParticipants),
       raceCount: parseInt(raceCount) || 0,
       sailorName: boatData.seglername,
-      resultPdfData: currentPdfData,
-      invoicePdfData: currentInvoiceData,
+      // PDF-Daten werden NICHT mehr gespeichert (localStorage Limit)
+      resultPdfData: null,
+      invoicePdfData: null,
       invoiceAmount: amount,
       addedAt: new Date().toISOString()
     };
@@ -738,76 +826,213 @@ function App() {
   // === BERECHNUNGEN ===
   const totalAmount = regatten.reduce((sum, r) => sum + (r.invoiceAmount || 0), 0);
 
-  // === PDF EXPORT ===
+  // === PDF EXPORT (Gesamtantrag) ===
   const generatePDF = () => {
-    const doc = new jsPDF();
-    
-    doc.setFontSize(18);
-    doc.setFont('helvetica', 'bold');
-    doc.text('Antrag auf Startgeld-Erstattung', 105, 20, { align: 'center' });
-    doc.setFontSize(10);
-    doc.setFont('helvetica', 'normal');
-    doc.text(`Tegeler Segel-Club e.V. - Saison ${new Date().getFullYear()}`, 105, 28, { align: 'center' });
-    
-    doc.setDrawColor(139, 92, 246);
-    doc.setLineWidth(0.5);
-    doc.line(20, 35, 190, 35);
-    
-    doc.setFontSize(12);
-    doc.setFont('helvetica', 'bold');
-    doc.text('Antragsteller', 20, 45);
-    doc.setFontSize(10);
-    doc.setFont('helvetica', 'normal');
-    doc.text([
-      `Name: ${boatData.seglername}`,
-      `Segelnummer: ${boatData.segelnummer}`,
-      `Bootsklasse: ${boatData.bootsklasse}`,
-      `IBAN: ${boatData.iban}`,
-      `Kontoinhaber: ${boatData.kontoinhaber}`,
-    ], 20, 55);
-    
-    doc.autoTable({
-      startY: 90,
-      head: [['Regatta', 'Datum', 'Platz', 'Boote', 'Wettf.', 'Startgeld']],
-      body: regatten.map(r => [
-        r.regattaName || '-',
-        r.date ? new Date(r.date).toLocaleDateString('de-DE') : '-',
-        r.placement ? `${r.placement}.` : '-',
-        r.totalParticipants || '-',
-        r.raceCount || '-',
-        r.invoiceAmount ? `${r.invoiceAmount.toFixed(2)} €` : '-'
-      ]),
-      foot: [['', '', '', '', 'Gesamt:', `${totalAmount.toFixed(2)} €`]],
-      theme: 'striped',
-      headStyles: { fillColor: [139, 92, 246], fontStyle: 'bold' },
-      footStyles: { fillColor: [16, 185, 129], fontStyle: 'bold' },
-    });
-    
-    const signY = doc.lastAutoTable.finalY + 30;
-    doc.setDrawColor(100);
-    doc.line(20, signY, 80, signY);
-    doc.setFontSize(8);
-    doc.text('Datum, Unterschrift', 20, signY + 5);
-    doc.line(120, signY, 180, signY);
-    doc.text('Genehmigt (Vorstand)', 120, signY + 5);
-    
-    doc.save(`TSC_Erstattungsantrag_${boatData.seglername.replace(/\s/g, '_')}.pdf`);
-    setSuccess('PDF wurde erstellt');
+    try {
+      const doc = new jsPDF();
+      
+      // Header
+      doc.setFontSize(20);
+      doc.setFont('helvetica', 'bold');
+      doc.text('Antrag auf Startgeld-Erstattung', 105, 20, { align: 'center' });
+      
+      doc.setFontSize(11);
+      doc.setFont('helvetica', 'normal');
+      doc.text(`Tegeler Segel-Club e.V. - Saison ${new Date().getFullYear()}`, 105, 28, { align: 'center' });
+      
+      // Linie
+      doc.setDrawColor(139, 92, 246);
+      doc.setLineWidth(0.5);
+      doc.line(20, 35, 190, 35);
+      
+      // Antragsteller-Box
+      doc.setFillColor(248, 250, 252);
+      doc.rect(20, 40, 170, 35, 'F');
+      doc.setDrawColor(200, 200, 200);
+      doc.rect(20, 40, 170, 35, 'S');
+      
+      doc.setFontSize(12);
+      doc.setFont('helvetica', 'bold');
+      doc.text('Antragsteller', 25, 48);
+      
+      doc.setFontSize(10);
+      doc.setFont('helvetica', 'normal');
+      doc.text([
+        `Name: ${boatData.seglername || '-'}`,
+        `Segelnummer: ${boatData.segelnummer || '-'}`,
+        `Bootsklasse: ${boatData.bootsklasse || '-'}`,
+      ], 25, 56);
+      
+      doc.text([
+        `IBAN: ${boatData.iban || '-'}`,
+        `Kontoinhaber: ${boatData.kontoinhaber || '-'}`,
+      ], 110, 56);
+      
+      // Regatten-Tabelle
+      doc.setFontSize(12);
+      doc.setFont('helvetica', 'bold');
+      doc.text('Besuchte Regatten', 20, 85);
+      
+      doc.autoTable({
+        startY: 90,
+        head: [['Nr.', 'Regatta', 'Datum', 'Platz', 'Boote', 'Wettf.', 'Startgeld']],
+        body: regatten.map((r, i) => [
+          (i + 1).toString(),
+          r.regattaName || '-',
+          r.date ? new Date(r.date).toLocaleDateString('de-DE') : '-',
+          r.placement ? `${r.placement}.` : '-',
+          r.totalParticipants || '-',
+          r.raceCount || '-',
+          r.invoiceAmount ? `${r.invoiceAmount.toFixed(2)} €` : '-'
+        ]),
+        foot: [['', '', '', '', '', 'Gesamt:', `${totalAmount.toFixed(2)} €`]],
+        theme: 'grid',
+        headStyles: { 
+          fillColor: [139, 92, 246], 
+          fontStyle: 'bold',
+          halign: 'center'
+        },
+        footStyles: { 
+          fillColor: [16, 185, 129], 
+          fontStyle: 'bold',
+          textColor: [255, 255, 255]
+        },
+        columnStyles: {
+          0: { halign: 'center', cellWidth: 12 },
+          3: { halign: 'center' },
+          4: { halign: 'center' },
+          5: { halign: 'center' },
+          6: { halign: 'right' }
+        },
+        styles: { fontSize: 9 }
+      });
+      
+      // Anlagen-Hinweis
+      const afterTableY = doc.lastAutoTable.finalY + 15;
+      doc.setFontSize(10);
+      doc.setFont('helvetica', 'bold');
+      doc.text('Anlagen:', 20, afterTableY);
+      doc.setFont('helvetica', 'normal');
+      doc.text([
+        `• ${regatten.length} Ergebnisliste(n) als PDF`,
+        `• ${regatten.length} Rechnung(en) als PDF`
+      ], 25, afterTableY + 6);
+      
+      // Unterschriften
+      const signY = afterTableY + 35;
+      doc.setDrawColor(100);
+      doc.line(20, signY, 85, signY);
+      doc.line(115, signY, 180, signY);
+      
+      doc.setFontSize(8);
+      doc.text('Ort, Datum, Unterschrift Antragsteller', 20, signY + 5);
+      doc.text('Genehmigt (Vorstand)', 115, signY + 5);
+      
+      // Footer
+      doc.setFontSize(8);
+      doc.setTextColor(128);
+      doc.text(`Erstellt am ${new Date().toLocaleDateString('de-DE')} um ${new Date().toLocaleTimeString('de-DE')}`, 105, 285, { align: 'center' });
+      
+      const filename = `TSC_Erstattungsantrag_${boatData.seglername?.replace(/\s/g, '_') || 'Antrag'}_${new Date().toISOString().slice(0,10)}.pdf`;
+      doc.save(filename);
+      setSuccess('PDF-Antrag wurde erstellt');
+      
+    } catch (err) {
+      console.error('PDF Error:', err);
+      setError('Fehler beim Erstellen des PDFs: ' + err.message);
+    }
   };
 
-  // === CSV EXPORT ===
+  // === CSV EXPORT (Ein Buchungssatz) ===
   const generateCSV = () => {
-    const headers = ['Regatta', 'Datum', 'Segler', 'Segelnummer', 'Bootsklasse', 'Platzierung', 'Boote', 'Wettfahrten', 'Startgeld', 'IBAN', 'Kontoinhaber'];
-    const rows = regatten.map(r => [r.regattaName, r.date, boatData.seglername, boatData.segelnummer, r.boatClass || boatData.bootsklasse, r.placement, r.totalParticipants, r.raceCount, r.invoiceAmount, boatData.iban, boatData.kontoinhaber]);
-    const csv = [headers, ...rows].map(row => row.map(cell => `"${(cell || '').toString().replace(/"/g, '""')}"`).join(';')).join('\n');
-    const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `TSC_Erstattung_${new Date().toISOString().slice(0,10)}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-    setSuccess('CSV wurde erstellt');
+    try {
+      // Ein Buchungssatz für die Buchhaltung
+      const datum = new Date().toLocaleDateString('de-DE');
+      const verwendungszweck = `Startgeld-Erstattung ${boatData.seglername} - ${regatten.length} Regatta(en): ${regatten.map(r => r.regattaName).join(', ')}`;
+      
+      const headers = ['Datum', 'Empfänger', 'IBAN', 'Betrag', 'Währung', 'Verwendungszweck', 'Bootsklasse', 'Segelnummer'];
+      const row = [
+        datum,
+        boatData.kontoinhaber || boatData.seglername,
+        boatData.iban,
+        totalAmount.toFixed(2).replace('.', ','),
+        'EUR',
+        verwendungszweck,
+        boatData.bootsklasse,
+        boatData.segelnummer
+      ];
+      
+      const csv = [
+        headers.join(';'),
+        row.map(cell => `"${(cell || '').toString().replace(/"/g, '""')}"`).join(';')
+      ].join('\n');
+      
+      const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `TSC_Buchungssatz_${boatData.seglername?.replace(/\s/g, '_') || 'Export'}_${new Date().toISOString().slice(0,10)}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+      setSuccess('CSV-Buchungssatz wurde erstellt');
+      
+    } catch (err) {
+      console.error('CSV Error:', err);
+      setError('Fehler beim Erstellen der CSV: ' + err.message);
+    }
+  };
+
+  // === ANTRAG EINREICHEN (per Mail) ===
+  const submitApplication = () => {
+    try {
+      // Erst PDFs generieren
+      generatePDF();
+      generateCSV();
+      
+      // Mail-Body erstellen
+      const mailTo = 'kolja.schumann@aitema.de';
+      const subject = encodeURIComponent(`TSC Startgeld-Erstattung: ${boatData.seglername} - ${totalAmount.toFixed(2)} €`);
+      
+      const regattaList = regatten.map((r, i) => 
+        `${i+1}. ${r.regattaName || 'Regatta'}: ${r.invoiceAmount?.toFixed(2) || '0,00'} € (Platz ${r.placement || '?'} von ${r.totalParticipants || '?'})`
+      ).join('\n');
+      
+      const body = encodeURIComponent(
+`Sehr geehrte Damen und Herren,
+
+hiermit beantrage ich die Erstattung meiner Startgelder für die Saison ${new Date().getFullYear()}.
+
+ANTRAGSTELLER:
+Name: ${boatData.seglername || '-'}
+Segelnummer: ${boatData.segelnummer || '-'}
+Bootsklasse: ${boatData.bootsklasse || '-'}
+IBAN: ${boatData.iban || '-'}
+Kontoinhaber: ${boatData.kontoinhaber || '-'}
+
+REGATTEN (${regatten.length}):
+${regattaList}
+
+GESAMTBETRAG: ${totalAmount.toFixed(2)} €
+
+Die Ergebnislisten und Rechnungen als PDF sind diesem Antrag beigefügt.
+Der PDF-Antrag und der CSV-Buchungssatz wurden soeben heruntergeladen - bitte als Anhang hinzufügen.
+
+Mit freundlichen Grüßen
+${boatData.seglername || 'Antragsteller'}
+
+---
+Erstellt mit TSC Startgeld-Erstattung App
+`);
+      
+      // Mail-Client öffnen
+      window.location.href = `mailto:${mailTo}?subject=${subject}&body=${body}`;
+      
+      setSuccess('Mail-Programm geöffnet - bitte PDFs und CSVs anhängen!');
+      
+    } catch (err) {
+      console.error('Submit Error:', err);
+      setError('Fehler beim Einreichen: ' + err.message);
+    }
   };
 
   // ============================================
@@ -1276,19 +1501,42 @@ function App() {
                 </div>
               </div>
               
+              {/* Regatten-Liste */}
+              {regatten.length > 0 && (
+                <div className="space-y-2 mb-6">
+                  {regatten.map((r, i) => (
+                    <div key={r.id} className="flex items-center justify-between p-3 rounded-lg bg-white/5 text-sm">
+                      <div className="flex items-center gap-3">
+                        <span className="w-6 h-6 rounded-full bg-violet-500/20 text-violet-400 flex items-center justify-center text-xs">{i + 1}</span>
+                        <div>
+                          <div className="text-white">{r.regattaName || 'Regatta'}</div>
+                          <div className="text-slate-500 text-xs">
+                            {r.date && new Date(r.date).toLocaleDateString('de-DE')}
+                            {r.placement && ` • Platz ${r.placement}`}
+                            {r.totalParticipants && ` von ${r.totalParticipants}`}
+                          </div>
+                        </div>
+                      </div>
+                      <span className="text-emerald-400 font-medium">{r.invoiceAmount?.toFixed(2).replace('.', ',')} €</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              
               <div className="flex items-center justify-between p-4 rounded-xl bg-gradient-to-r from-violet-500/20 to-cyan-500/20 border border-violet-500/30">
                 <div className="text-white font-semibold">Gesamtbetrag zur Erstattung</div>
                 <div className="text-2xl font-bold text-white">{totalAmount.toFixed(2).replace('.', ',')} €</div>
               </div>
             </GlassCard>
             
+            {/* Export-Buttons */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <GlassCard className="cursor-pointer hover:border-violet-500/30 transition-all" onClick={generatePDF}>
                 <div className="flex items-center gap-4">
                   <div className="w-12 h-12 rounded-xl bg-red-500/20 flex items-center justify-center text-2xl">📄</div>
                   <div>
                     <div className="text-white font-semibold">PDF-Antrag</div>
-                    <div className="text-sm text-slate-400">Erstattungsantrag als PDF</div>
+                    <div className="text-sm text-slate-400">Gesamtantrag mit Übersicht</div>
                   </div>
                 </div>
               </GlassCard>
@@ -1297,12 +1545,36 @@ function App() {
                 <div className="flex items-center gap-4">
                   <div className="w-12 h-12 rounded-xl bg-emerald-500/20 flex items-center justify-center text-2xl">📊</div>
                   <div>
-                    <div className="text-white font-semibold">CSV-Export</div>
-                    <div className="text-sm text-slate-400">Für Buchhaltung & Excel</div>
+                    <div className="text-white font-semibold">CSV-Buchungssatz</div>
+                    <div className="text-sm text-slate-400">Für Buchhaltung & SEPA</div>
                   </div>
                 </div>
               </GlassCard>
             </div>
+            
+            {/* Einreichen-Button */}
+            <GlassCard className="border-2 border-emerald-500/30 bg-emerald-500/5">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-4">
+                  <div className="w-14 h-14 rounded-xl bg-emerald-500/20 flex items-center justify-center text-3xl">📧</div>
+                  <div>
+                    <div className="text-white font-semibold text-lg">Antrag einreichen</div>
+                    <div className="text-sm text-slate-400">PDF + CSV erstellen und per Mail an den TSC senden</div>
+                    <div className="text-xs text-emerald-400 mt-1">Empfänger: kolja.schumann@aitema.de</div>
+                  </div>
+                </div>
+                <button
+                  onClick={submitApplication}
+                  disabled={regatten.length === 0}
+                  className="px-6 py-3 rounded-xl bg-gradient-to-r from-emerald-600 to-emerald-500 text-white font-medium hover:from-emerald-500 hover:to-emerald-400 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Jetzt einreichen →
+                </button>
+              </div>
+              <div className="mt-4 p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-300 text-sm">
+                💡 Die PDF- und CSV-Dateien werden heruntergeladen. Bitte füge sie als Anhang zur Mail hinzu, zusammen mit den Original-Rechnungen und Ergebnislisten.
+              </div>
+            </GlassCard>
           </div>
         )}
       </main>
