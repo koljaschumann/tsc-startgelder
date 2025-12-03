@@ -55,6 +55,8 @@ function App() {
   const [currentPdfData, setCurrentPdfData] = useState(null); // Base64 der aktuellen PDF
   const [manualMode, setManualMode] = useState(false);
   const [debugText, setDebugText] = useState(''); // Debug: Extrahierter Text
+  const [pasteMode, setPasteMode] = useState(false); // Text-Paste Modus
+  const [pastedText, setPastedText] = useState(''); // Eingefügter Text
   
   // Manuelle Eingabe State
   const [manualData, setManualData] = useState({
@@ -345,10 +347,10 @@ function App() {
       console.log('Full text (first 1000):', fullText.substring(0, 1000));
       
       // Debug: Zeige extrahierten Text
-      if (fullText.trim().length === 0) {
-        setDebugText('KEIN TEXT EXTRAHIERT!\n\nDiese PDF enthält möglicherweise nur Bilder (gescannt) statt echten Text.\n\nBitte nutze "Manuell eingeben" für diese Regatta.');
-        setError('Diese PDF enthält keinen extrahierbaren Text. Bitte nutze "Manuell eingeben".');
-        setManualMode(true);
+      if (fullText.trim().length < 50) {
+        setDebugText('KEIN TEXT EXTRAHIERT!\n\nDiese PDF enthält keinen extrahierbaren Text.\n\nBitte nutze "Text aus PDF einfügen" - öffne die PDF, markiere alles (Strg+A), kopiere (Strg+C) und füge hier ein.');
+        setError('PDF-Text konnte nicht automatisch gelesen werden. Bitte füge den Text manuell ein.');
+        setPasteMode(true);
         return;
       }
       
@@ -423,6 +425,49 @@ function App() {
     setIsDragging(false);
     const file = e.dataTransfer.files?.[0];
     await processPdfFile(file);
+  };
+
+  // Text aus Zwischenablage verarbeiten
+  const processPastedText = () => {
+    if (!pastedText.trim()) {
+      setError('Bitte füge zuerst Text ein');
+      return;
+    }
+    
+    if (!boatData.segelnummer) {
+      setError('Bitte zuerst die Segelnummer in den Einstellungen eingeben');
+      setActiveTab('settings');
+      return;
+    }
+    
+    console.log('Processing pasted text, length:', pastedText.length);
+    setDebugText(pastedText.substring(0, 3000));
+    
+    const result = parseRegattaPDF(pastedText, boatData.segelnummer);
+    
+    if (result.success) {
+      // Duplikat-Check
+      const isDuplicate = regatten.some(r => 
+        r.regattaName === result.regattaName && 
+        r.boatClass === result.boatClass
+      );
+      
+      if (isDuplicate) {
+        setError(`Diese Regatta "${result.regattaName}" ist bereits in deiner Liste!`);
+      }
+    }
+    
+    setPdfResult(result);
+    
+    if (!result.success) {
+      setError('Text konnte nicht vollständig geparst werden. Prüfe die Debug-Ausgabe.');
+    } else if (!result.participant) {
+      setError(`Segelnummer "${boatData.segelnummer}" nicht gefunden.`);
+    } else {
+      setSuccess(`${result.participant.name} gefunden: Platz ${result.participant.rank} von ${result.totalParticipants}`);
+      setPasteMode(false);
+      setPastedText('');
+    }
   };
 
   // === REGATTA HINZUFÜGEN ===
@@ -792,6 +837,47 @@ function App() {
               </div>
             </div>
 
+            {/* Text-Paste Mode */}
+            {pasteMode && (
+              <div className="bg-yellow-500/10 backdrop-blur-sm rounded-xl p-6 border border-yellow-400/30">
+                <h3 className="text-lg font-semibold text-white mb-2 flex items-center gap-2">
+                  📋 Text aus PDF einfügen
+                </h3>
+                <p className="text-yellow-200 text-sm mb-4">
+                  Die PDF konnte nicht automatisch gelesen werden. Bitte:
+                </p>
+                <ol className="text-yellow-200 text-sm mb-4 list-decimal list-inside space-y-1">
+                  <li>Öffne die PDF in Chrome oder Adobe Reader</li>
+                  <li>Markiere alles (Strg+A)</li>
+                  <li>Kopiere (Strg+C)</li>
+                  <li>Füge hier ein (Strg+V)</li>
+                </ol>
+                
+                <textarea
+                  value={pastedText}
+                  onChange={(e) => setPastedText(e.target.value)}
+                  placeholder="Text hier einfügen..."
+                  className="w-full h-40 px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white text-sm font-mono resize-none"
+                />
+                
+                <div className="flex gap-3 mt-4">
+                  <button
+                    onClick={processPastedText}
+                    disabled={!pastedText.trim()}
+                    className="flex-1 py-3 px-4 rounded-lg font-medium bg-yellow-500 hover:bg-yellow-400 text-black transition-all disabled:opacity-50"
+                  >
+                    ✨ Text verarbeiten
+                  </button>
+                  <button
+                    onClick={() => { setPasteMode(false); setPastedText(''); }}
+                    className="py-3 px-4 rounded-lg font-medium bg-white/10 hover:bg-white/20 text-white"
+                  >
+                    ✕ Abbrechen
+                  </button>
+                </div>
+              </div>
+            )}
+
             {/* PDF Result */}
             {pdfResult && (
               <div className="bg-white/10 backdrop-blur-sm rounded-xl p-6 border border-white/20">
@@ -873,12 +959,19 @@ function App() {
             )}
 
             {/* Manual Entry */}
-            <div className="text-center">
+            <div className="flex justify-center gap-4 text-sm">
               <button
-                onClick={() => setManualMode(!manualMode)}
-                className="text-cyan-300 hover:text-cyan-200 text-sm underline"
+                onClick={() => { setPasteMode(!pasteMode); setManualMode(false); }}
+                className="text-cyan-300 hover:text-cyan-200 underline"
               >
-                {manualMode ? '← Zurück' : 'Manuell eingeben →'}
+                {pasteMode ? '← Zurück' : '📋 Text einfügen'}
+              </button>
+              <span className="text-white/30">|</span>
+              <button
+                onClick={() => { setManualMode(!manualMode); setPasteMode(false); }}
+                className="text-cyan-300 hover:text-cyan-200 underline"
+              >
+                {manualMode ? '← Zurück' : '✏️ Manuell eingeben'}
               </button>
             </div>
 
