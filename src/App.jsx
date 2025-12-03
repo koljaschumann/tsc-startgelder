@@ -3,8 +3,23 @@ import * as pdfjsLib from 'pdfjs-dist'
 import { jsPDF } from 'jspdf'
 import 'jspdf-autotable'
 
-// PDF.js Worker einrichten
-pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`
+// PDF.js Worker einrichten - mehrere Optionen probieren
+const setupPdfWorker = () => {
+  // Option 1: CDN mit exakter Version
+  const version = pdfjsLib.version || '3.11.174';
+  const workerUrls = [
+    `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${version}/pdf.worker.min.js`,
+    `https://unpkg.com/pdfjs-dist@${version}/build/pdf.worker.min.js`,
+    `https://cdn.jsdelivr.net/npm/pdfjs-dist@${version}/build/pdf.worker.min.js`
+  ];
+  
+  // Versuche ersten URL
+  pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrls[0];
+  console.log('PDF.js version:', version);
+  console.log('Worker URL:', workerUrls[0]);
+};
+
+setupPdfWorker();
 
 // TSC Startgeld-Erstattung App v5.0
 // Features: PDF-Upload, Duplikat-Erkennung, PDF-Archiv, Gesamt-Export
@@ -257,6 +272,7 @@ function App() {
     
     try {
       const arrayBuffer = await file.arrayBuffer();
+      console.log('PDF loaded, size:', arrayBuffer.byteLength);
       
       // PDF als Base64 speichern für später
       const base64 = btoa(
@@ -265,34 +281,78 @@ function App() {
       setCurrentPdfData(base64);
       
       // PDF Text extrahieren
-      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-      
-      let fullText = '';
-      for (let i = 1; i <= pdf.numPages; i++) {
-        const page = await pdf.getPage(i);
-        const textContent = await page.getTextContent();
-        
-        // Sortiere Items nach Position für bessere Textrekonstruktion
-        const items = textContent.items.sort((a, b) => {
-          const yDiff = b.transform[5] - a.transform[5]; // Y-Position (umgekehrt)
-          if (Math.abs(yDiff) > 5) return yDiff;
-          return a.transform[4] - b.transform[4]; // X-Position
-        });
-        
-        let lastY = null;
-        for (const item of items) {
-          const y = Math.round(item.transform[5]);
-          if (lastY !== null && Math.abs(y - lastY) > 5) {
-            fullText += '\n';
-          }
-          fullText += item.str + ' ';
-          lastY = y;
+      let pdf;
+      try {
+        // Versuche mit Worker
+        pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+        console.log('PDF parsed with worker, pages:', pdf.numPages);
+      } catch (pdfError) {
+        console.warn('Worker failed, trying without worker:', pdfError.message);
+        try {
+          // Fallback: Ohne Worker
+          pdf = await pdfjsLib.getDocument({ 
+            data: arrayBuffer,
+            disableWorker: true,
+            isEvalSupported: false
+          }).promise;
+          console.log('PDF parsed without worker, pages:', pdf.numPages);
+        } catch (fallbackError) {
+          console.error('PDF parse error (both methods failed):', fallbackError);
+          setError('PDF konnte nicht gelesen werden. Bitte nutze "Manuell eingeben".');
+          setDebugText('PDF Parse Error:\n' + pdfError.message + '\n\nFallback Error:\n' + fallbackError.message);
+          setManualMode(true);
+          return;
         }
-        fullText += '\n\n';
       }
       
-      console.log('Extracted text (first 2000 chars):', fullText.substring(0, 2000));
-      setDebugText(fullText.substring(0, 3000));
+      let fullText = '';
+      
+      for (let i = 1; i <= pdf.numPages; i++) {
+        try {
+          const page = await pdf.getPage(i);
+          const textContent = await page.getTextContent();
+          
+          console.log(`Page ${i}: ${textContent.items.length} text items`);
+          
+          // Debug: Zeige erste 10 Items
+          if (i === 1) {
+            console.log('First 10 items:', textContent.items.slice(0, 10).map(item => ({
+              str: item.str,
+              width: item.width,
+              hasFont: !!item.fontName
+            })));
+          }
+          
+          if (textContent.items.length === 0) {
+            console.log(`Page ${i} has no text items - might be image-based`);
+          }
+          
+          // Extrahiere Text - versuche verschiedene Methoden
+          for (const item of textContent.items) {
+            if (item.str && item.str.trim()) {
+              fullText += item.str + ' ';
+            }
+          }
+          fullText += '\n';
+          
+        } catch (pageError) {
+          console.error(`Error on page ${i}:`, pageError);
+        }
+      }
+      
+      console.log('Total extracted text length:', fullText.length);
+      console.log('Extracted text preview:', fullText.substring(0, 500));
+      console.log('Full text (first 1000):', fullText.substring(0, 1000));
+      
+      // Debug: Zeige extrahierten Text
+      if (fullText.trim().length === 0) {
+        setDebugText('KEIN TEXT EXTRAHIERT!\n\nDiese PDF enthält möglicherweise nur Bilder (gescannt) statt echten Text.\n\nBitte nutze "Manuell eingeben" für diese Regatta.');
+        setError('Diese PDF enthält keinen extrahierbaren Text. Bitte nutze "Manuell eingeben".');
+        setManualMode(true);
+        return;
+      }
+      
+      setDebugText(fullText.substring(0, 5000));
       
       // Parse
       const result = parseRegattaPDF(fullText, boatData.segelnummer);
@@ -333,6 +393,7 @@ function App() {
     } catch (err) {
       console.error('PDF Error:', err);
       setError('Fehler beim Lesen der PDF: ' + err.message);
+      setDebugText('Error: ' + err.message + '\n\nStack: ' + err.stack);
     } finally {
       setIsProcessing(false);
     }
