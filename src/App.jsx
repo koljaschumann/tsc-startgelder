@@ -4,26 +4,15 @@ import { jsPDF } from 'jspdf'
 import 'jspdf-autotable'
 import Tesseract from 'tesseract.js'
 
-// PDF.js Worker einrichten - mehrere Optionen probieren
+// PDF.js Worker einrichten
 const setupPdfWorker = () => {
-  // Option 1: CDN mit exakter Version
   const version = pdfjsLib.version || '3.11.174';
-  const workerUrls = [
-    `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${version}/pdf.worker.min.js`,
-    `https://unpkg.com/pdfjs-dist@${version}/build/pdf.worker.min.js`,
-    `https://cdn.jsdelivr.net/npm/pdfjs-dist@${version}/build/pdf.worker.min.js`
-  ];
-  
-  // Versuche ersten URL
-  pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrls[0];
-  console.log('PDF.js version:', version);
-  console.log('Worker URL:', workerUrls[0]);
+  pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${version}/pdf.worker.min.js`;
 };
-
 setupPdfWorker();
 
-// TSC Startgeld-Erstattung App v5.0
-// Features: PDF-Upload, Duplikat-Erkennung, PDF-Archiv, Gesamt-Export
+// TSC Startgeld-Erstattung App v6.0
+// Features: Ergebnisliste + Rechnung Upload, OCR, Betragsextraktion
 
 function App() {
   // Bootsdaten (persistent)
@@ -38,9 +27,9 @@ function App() {
     };
   });
   
-  // Regatta-Liste mit PDF-Daten
+  // Regatta-Liste mit PDF-Daten und Rechnungen
   const [regatten, setRegatten] = useState(() => {
-    const saved = localStorage.getItem('tsc-regatten-v5');
+    const saved = localStorage.getItem('tsc-regatten-v6');
     return saved ? JSON.parse(saved) : [];
   });
   
@@ -51,14 +40,17 @@ function App() {
   const [success, setSuccess] = useState(null);
   const [isDragging, setIsDragging] = useState(false);
   
-  // PDF Upload State
+  // PDF Upload State (Ergebnisliste)
   const [pdfResult, setPdfResult] = useState(null);
-  const [currentPdfData, setCurrentPdfData] = useState(null); // Base64 der aktuellen PDF
+  const [currentPdfData, setCurrentPdfData] = useState(null);
   const [manualMode, setManualMode] = useState(false);
-  const [debugText, setDebugText] = useState(''); // Debug: Extrahierter Text
-  const [pasteMode, setPasteMode] = useState(false); // Text-Paste Modus
-  const [pastedText, setPastedText] = useState(''); // Eingefügter Text
-  const [ocrProgress, setOcrProgress] = useState(null); // OCR Fortschritt
+  const [debugText, setDebugText] = useState('');
+  const [ocrProgress, setOcrProgress] = useState(null);
+  
+  // Rechnungs-Upload State
+  const [currentInvoiceData, setCurrentInvoiceData] = useState(null);
+  const [currentInvoiceAmount, setCurrentInvoiceAmount] = useState('');
+  const [invoiceProcessing, setInvoiceProcessing] = useState(false);
   
   // Manuelle Eingabe State
   const [manualData, setManualData] = useState({
@@ -67,7 +59,8 @@ function App() {
     date: '',
     placement: '',
     totalParticipants: '',
-    raceCount: ''
+    raceCount: '',
+    invoiceAmount: ''
   });
 
   // Persist data
@@ -76,7 +69,7 @@ function App() {
   }, [boatData]);
   
   useEffect(() => {
-    localStorage.setItem('tsc-regatten-v5', JSON.stringify(regatten));
+    localStorage.setItem('tsc-regatten-v6', JSON.stringify(regatten));
   }, [regatten]);
 
   // Clear messages
@@ -94,7 +87,138 @@ function App() {
     }
   }, [error]);
 
-  // === PDF PARSING ===
+  // === OCR FUNKTION ===
+  const performOCR = async (pdf, progressPrefix = '') => {
+    let fullText = '';
+    const totalPages = pdf.numPages;
+    
+    for (let i = 1; i <= totalPages; i++) {
+      try {
+        setOcrProgress({ 
+          status: `${progressPrefix}Seite ${i}/${totalPages} wird gescannt...`, 
+          percent: Math.round((i - 1) / totalPages * 100) 
+        });
+        
+        const page = await pdf.getPage(i);
+        const viewport = page.getViewport({ scale: 2.0 });
+        
+        const canvas = document.createElement('canvas');
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+        const ctx = canvas.getContext('2d');
+        
+        await page.render({ canvasContext: ctx, viewport }).promise;
+        
+        const { data } = await Tesseract.recognize(canvas, 'deu+eng', {
+          logger: (m) => {
+            if (m.status === 'recognizing text') {
+              setOcrProgress({ 
+                status: `${progressPrefix}Seite ${i}/${totalPages}: Text wird erkannt...`, 
+                percent: Math.round(((i - 1) + m.progress) / totalPages * 100) 
+              });
+            }
+          }
+        });
+        
+        fullText += data.text + '\n';
+      } catch (pageError) {
+        console.error(`OCR error on page ${i}:`, pageError);
+      }
+    }
+    
+    return fullText;
+  };
+
+  // === PDF TEXT EXTRAKTION ===
+  const extractTextFromPDF = async (arrayBuffer, useOcrFallback = true, progressPrefix = '') => {
+    let pdf;
+    try {
+      pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+    } catch (e) {
+      pdf = await pdfjsLib.getDocument({ data: arrayBuffer, disableWorker: true }).promise;
+    }
+    
+    let fullText = '';
+    
+    // Direkte Extraktion versuchen
+    for (let i = 1; i <= pdf.numPages; i++) {
+      try {
+        const page = await pdf.getPage(i);
+        const textContent = await page.getTextContent();
+        for (const item of textContent.items) {
+          if (item.str && item.str.trim()) {
+            fullText += item.str + ' ';
+          }
+        }
+        fullText += '\n';
+      } catch (e) {
+        console.error(`Error on page ${i}:`, e);
+      }
+    }
+    
+    // OCR falls nötig
+    if (fullText.trim().length < 100 && useOcrFallback) {
+      console.log('Switching to OCR...');
+      fullText = await performOCR(pdf, progressPrefix);
+    }
+    
+    return { text: fullText, pdf };
+  };
+
+  // === RECHNUNGSBETRAG EXTRAHIEREN ===
+  const extractInvoiceAmount = (text) => {
+    console.log('Extracting invoice amount from:', text.substring(0, 500));
+    
+    // Verschiedene Patterns für Beträge
+    const patterns = [
+      // "Gesamtbetrag: 45,00 €" oder "Summe: 45,00 EUR"
+      /(?:Gesamt|Summe|Total|Betrag|Rechnungsbetrag|Endbetrag|zu zahlen)[:\s]*(\d+[.,]\d{2})\s*(?:€|EUR|Euro)?/gi,
+      // "45,00 €" am Ende einer Zeile
+      /(\d+[.,]\d{2})\s*(?:€|EUR|Euro)\s*$/gm,
+      // "EUR 45,00" oder "€ 45,00"
+      /(?:€|EUR|Euro)\s*(\d+[.,]\d{2})/gi,
+      // Startgeld spezifisch: "Startgeld: 45,00"
+      /Startgeld[:\s]*(\d+[.,]\d{2})/gi,
+      // Meldegeld
+      /Meldegeld[:\s]*(\d+[.,]\d{2})/gi,
+    ];
+    
+    const foundAmounts = [];
+    
+    for (const pattern of patterns) {
+      let match;
+      while ((match = pattern.exec(text)) !== null) {
+        const amountStr = match[1].replace(',', '.');
+        const amount = parseFloat(amountStr);
+        if (amount > 0 && amount < 1000) { // Plausible Startgelder
+          foundAmounts.push(amount);
+        }
+      }
+    }
+    
+    // Wenn mehrere gefunden, nimm den häufigsten oder höchsten
+    if (foundAmounts.length > 0) {
+      // Zähle Vorkommen
+      const counts = {};
+      foundAmounts.forEach(a => {
+        const key = a.toFixed(2);
+        counts[key] = (counts[key] || 0) + 1;
+      });
+      
+      // Sortiere nach Häufigkeit, dann nach Betrag
+      const sorted = Object.entries(counts).sort((a, b) => {
+        if (b[1] !== a[1]) return b[1] - a[1];
+        return parseFloat(b[0]) - parseFloat(a[0]);
+      });
+      
+      console.log('Found amounts:', counts);
+      return parseFloat(sorted[0][0]);
+    }
+    
+    return null;
+  };
+
+  // === ERGEBNISLISTE PARSEN ===
   const parseRegattaPDF = (text, sailNumber) => {
     const result = {
       success: false,
@@ -108,17 +232,11 @@ function App() {
     };
 
     try {
-      console.log('=== PDF PARSING ===');
-      console.log('Text length:', text.length);
-      
-      // Normalisiere Text (entferne mehrfache Leerzeichen)
       const normalizedText = text.replace(/\s+/g, ' ');
       
-      // === REGATTA-NAME ===
-      // Suche nach Pattern: "Name 2025 - Opti" oder "Name-Preis 2025"
+      // Regatta-Name
       const namePatterns = [
         /([A-Za-zäöüÄÖÜß\-]+(?:[\s\-][A-Za-zäöüÄÖÜß\-]+)*[\s\-]*(?:Preis|Pokal|Cup|Trophy|Regatta|Festival)[\s\-]*\d{4})/i,
-        /([A-Za-zäöüÄÖÜß\-]+[\s\-]+\d{4}[\s\-]+[\-][\s\-]+Opti[mist]*\s*[ABC]?)/i,
         /manage2sail\.com\s+([A-Za-zäöüÄÖÜß0-9\s\-]+?)(?:\s+Ergebnisse|\s+Overall|\s+Results)/i,
       ];
       
@@ -130,47 +248,35 @@ function App() {
         }
       }
       
-      // === BOOTSKLASSE ===
+      // Bootsklasse
       const classMatch = normalizedText.match(/Opti(?:mist)?\s*([ABC])/i);
       if (classMatch) {
         result.boatClass = 'Optimist ' + classMatch[1].toUpperCase();
       } else if (/Optimist/i.test(normalizedText)) {
         result.boatClass = 'Optimist';
-      } else if (/420/i.test(normalizedText)) {
-        result.boatClass = '420er';
-      } else if (/ILCA/i.test(normalizedText)) {
-        const ilcaMatch = normalizedText.match(/ILCA\s*(\d)/i);
-        result.boatClass = ilcaMatch ? `ILCA ${ilcaMatch[1]}` : 'ILCA';
       }
       
-      // === DATUM ===
-      // Deutsches Format: 11.05.2025
+      // Datum
       let dateMatch = normalizedText.match(/(\d{1,2})\.(\d{1,2})\.(\d{4})/);
       if (dateMatch) {
         const months = ['', 'JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
         result.date = `${dateMatch[1]} ${months[parseInt(dateMatch[2])]} ${dateMatch[3]}`;
-      }
-      // Englisches Format: 27 APR 2025
-      if (!result.date) {
+      } else {
         dateMatch = normalizedText.match(/(\d{1,2})\s*(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\s*(\d{4})/i);
         if (dateMatch) {
           result.date = `${dateMatch[1]} ${dateMatch[2].toUpperCase()} ${dateMatch[3]}`;
         }
       }
       
-      // === WETTFAHRTEN ===
+      // Wettfahrten
       const raceHeaders = normalizedText.match(/R(\d+)/g);
       if (raceHeaders) {
         const nums = raceHeaders.map(r => parseInt(r.slice(1))).filter(n => n > 0 && n < 15);
         if (nums.length > 0) result.raceCount = Math.max(...nums);
       }
       
-      // === TEILNEHMER FINDEN ===
+      // Teilnehmer
       const userNumbers = (sailNumber || '').replace(/\D/g, '');
-      console.log('Looking for sail number:', sailNumber, '-> digits:', userNumbers);
-      
-      // Finde alle GER-Nummern mit Kontext
-      // Pattern: Zahl (Rang) + GER + Zahl (Segelnummer) + Name
       const entries = [];
       const gerPattern = /(\d{1,3})\s+GER\s*(\d{3,5})\s+([A-Za-zÄÖÜäöüß][A-Za-zÄÖÜäöüß\s\-]+?)(?=\s+[A-Z]{2,10}\s|\s+\d{1,3}\.\d|\s+\d{1,3}\s+\d{1,3}|\s+GER\s|\s*$)/gi;
       
@@ -185,28 +291,17 @@ function App() {
         if (rank > 0 && rank < 200 && !seenSailNumbers.has(sailNum)) {
           seenSailNumbers.add(sailNum);
           
-          const entry = {
-            rank,
-            sailNumber: 'GER ' + sailNum,
-            name: name.substring(0, 35),
-            club: '',
-            totalPoints: 0,
-            netPoints: 0
-          };
-          
+          const entry = { rank, sailNumber: 'GER ' + sailNum, name: name.substring(0, 35), club: '' };
           entries.push(entry);
           
-          // Check if this is our sailor
           if (userNumbers && (sailNum === userNumbers || sailNum.endsWith(userNumbers) || userNumbers.endsWith(sailNum))) {
-            console.log('FOUND:', entry);
             result.participant = entry;
           }
         }
       }
       
-      // Fallback: Einfach alle GER-Nummern sammeln
+      // Fallback
       if (entries.length === 0) {
-        console.log('Fallback: Collecting all GER numbers...');
         const simplePattern = /GER\s*(\d{3,5})/gi;
         let idx = 0;
         while ((match = simplePattern.exec(normalizedText)) !== null) {
@@ -214,16 +309,8 @@ function App() {
           if (!seenSailNumbers.has(sailNum)) {
             seenSailNumbers.add(sailNum);
             idx++;
-            const entry = {
-              rank: idx,
-              sailNumber: 'GER ' + sailNum,
-              name: `Teilnehmer ${idx}`,
-              club: '',
-              totalPoints: 0,
-              netPoints: 0
-            };
+            const entry = { rank: idx, sailNumber: 'GER ' + sailNum, name: `Teilnehmer ${idx}`, club: '' };
             entries.push(entry);
-            
             if (userNumbers && (sailNum === userNumbers || sailNum.includes(userNumbers) || userNumbers.includes(sailNum))) {
               result.participant = entry;
             }
@@ -239,14 +326,6 @@ function App() {
         result.regattaName = result.boatClass ? `Regatta (${result.boatClass})` : 'Regatta';
       }
       
-      console.log('Result:', {
-        success: result.success,
-        regattaName: result.regattaName,
-        boatClass: result.boatClass,
-        participants: result.totalParticipants,
-        foundUser: !!result.participant
-      });
-      
     } catch (err) {
       console.error('Parse error:', err);
     }
@@ -254,62 +333,9 @@ function App() {
     return result;
   };
 
-  // === OCR FUNKTION ===
-  const performOCR = async (pdf, arrayBuffer) => {
-    console.log('Starting OCR...');
-    setOcrProgress({ status: 'Starte OCR...', percent: 0 });
-    
-    let fullText = '';
-    const totalPages = pdf.numPages;
-    
-    for (let i = 1; i <= totalPages; i++) {
-      try {
-        setOcrProgress({ 
-          status: `Seite ${i}/${totalPages} wird gescannt...`, 
-          percent: Math.round((i - 1) / totalPages * 100) 
-        });
-        
-        const page = await pdf.getPage(i);
-        const viewport = page.getViewport({ scale: 2.0 }); // Höhere Auflösung für bessere OCR
-        
-        // Canvas erstellen und Seite rendern
-        const canvas = document.createElement('canvas');
-        canvas.width = viewport.width;
-        canvas.height = viewport.height;
-        const ctx = canvas.getContext('2d');
-        
-        await page.render({ canvasContext: ctx, viewport }).promise;
-        
-        // OCR auf Canvas ausführen
-        const { data } = await Tesseract.recognize(canvas, 'deu+eng', {
-          logger: (m) => {
-            if (m.status === 'recognizing text') {
-              setOcrProgress({ 
-                status: `Seite ${i}/${totalPages}: Text wird erkannt...`, 
-                percent: Math.round(((i - 1) + m.progress) / totalPages * 100) 
-              });
-            }
-          }
-        });
-        
-        fullText += data.text + '\n';
-        console.log(`Page ${i} OCR complete, text length: ${data.text.length}`);
-        
-      } catch (pageError) {
-        console.error(`OCR error on page ${i}:`, pageError);
-      }
-    }
-    
-    setOcrProgress(null);
-    console.log('OCR complete, total text length:', fullText.length);
-    return fullText;
-  };
-
-  // === PDF VERARBEITUNG ===
-  const processPdfFile = async (file) => {
-    if (!file) return;
-    
-    if (!file.name.toLowerCase().endsWith('.pdf')) {
+  // === ERGEBNISLISTE VERARBEITEN ===
+  const processResultPdf = async (file) => {
+    if (!file || !file.name.toLowerCase().endsWith('.pdf')) {
       setError('Bitte eine PDF-Datei auswählen');
       return;
     }
@@ -328,103 +354,24 @@ function App() {
     
     try {
       const arrayBuffer = await file.arrayBuffer();
-      console.log('PDF loaded, size:', arrayBuffer.byteLength);
-      
-      // PDF als Base64 speichern für später
-      const base64 = btoa(
-        new Uint8Array(arrayBuffer).reduce((data, byte) => data + String.fromCharCode(byte), '')
-      );
+      const base64 = btoa(new Uint8Array(arrayBuffer).reduce((data, byte) => data + String.fromCharCode(byte), ''));
       setCurrentPdfData(base64);
       
-      // PDF Text extrahieren
-      let pdf;
-      try {
-        // Versuche mit Worker
-        pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-        console.log('PDF parsed with worker, pages:', pdf.numPages);
-      } catch (pdfError) {
-        console.warn('Worker failed, trying without worker:', pdfError.message);
-        try {
-          // Fallback: Ohne Worker
-          pdf = await pdfjsLib.getDocument({ 
-            data: arrayBuffer,
-            disableWorker: true,
-            isEvalSupported: false
-          }).promise;
-          console.log('PDF parsed without worker, pages:', pdf.numPages);
-        } catch (fallbackError) {
-          console.error('PDF parse error (both methods failed):', fallbackError);
-          setError('PDF konnte nicht gelesen werden. Bitte nutze "Manuell eingeben".');
-          setDebugText('PDF Parse Error:\n' + pdfError.message + '\n\nFallback Error:\n' + fallbackError.message);
-          setManualMode(true);
-          return;
-        }
-      }
+      const { text } = await extractTextFromPDF(arrayBuffer, true, 'Ergebnisliste: ');
+      setDebugText(text.substring(0, 5000));
       
-      let fullText = '';
-      
-      // Erste Versuch: Text direkt extrahieren
-      for (let i = 1; i <= pdf.numPages; i++) {
-        try {
-          const page = await pdf.getPage(i);
-          const textContent = await page.getTextContent();
-          
-          console.log(`Page ${i}: ${textContent.items.length} text items`);
-          
-          for (const item of textContent.items) {
-            if (item.str && item.str.trim()) {
-              fullText += item.str + ' ';
-            }
-          }
-          fullText += '\n';
-          
-        } catch (pageError) {
-          console.error(`Error on page ${i}:`, pageError);
-        }
-      }
-      
-      console.log('Direct extraction text length:', fullText.length);
-      
-      // Wenn kein oder wenig Text extrahiert wurde, nutze OCR
-      if (fullText.trim().length < 100) {
-        console.log('Text extraction failed, switching to OCR...');
-        setDebugText('Direkter Text-Extraktion fehlgeschlagen. Starte OCR...');
-        
-        try {
-          fullText = await performOCR(pdf, arrayBuffer);
-        } catch (ocrError) {
-          console.error('OCR failed:', ocrError);
-          setError('OCR fehlgeschlagen: ' + ocrError.message);
-          setDebugText('OCR Error: ' + ocrError.message);
-          setPasteMode(true);
-          return;
-        }
-      }
-      
-      console.log('Final text length:', fullText.length);
-      console.log('Text preview:', fullText.substring(0, 500));
-      
-      // Debug: Zeige extrahierten Text
-      if (fullText.trim().length < 50) {
-        setDebugText('KEIN TEXT EXTRAHIERT!\n\nWeder direkte Extraktion noch OCR haben funktioniert.\n\nBitte nutze "Text einfügen" oder "Manuell eingeben".');
-        setError('PDF konnte nicht gelesen werden. Bitte nutze manuelle Eingabe.');
-        setPasteMode(true);
+      if (text.trim().length < 50) {
+        setError('PDF konnte nicht gelesen werden.');
         return;
       }
       
-      setDebugText(fullText.substring(0, 5000));
+      const result = parseRegattaPDF(text, boatData.segelnummer);
       
-      // Parse
-      const result = parseRegattaPDF(fullText, boatData.segelnummer);
-      
-      // Duplikat-Prüfung
+      // Duplikat-Check
       if (result.success) {
         const isDuplicate = regatten.some(r => 
-          r.regattaName === result.regattaName && 
-          r.boatClass === result.boatClass &&
-          r.date === result.date
+          r.regattaName === result.regattaName && r.boatClass === result.boatClass
         );
-        
         if (isDuplicate) {
           setError(`Diese Regatta "${result.regattaName}" ist bereits in deiner Liste!`);
           setPdfResult(result);
@@ -435,115 +382,75 @@ function App() {
       setPdfResult(result);
       
       if (!result.success) {
-        setError('PDF konnte nicht vollständig gelesen werden. Nutze "Manuell eingeben" oder prüfe die Debug-Ausgabe unten.');
-        setManualData(prev => ({
-          ...prev,
-          regattaName: result.regattaName || '',
-          boatClass: result.boatClass || '',
-          date: result.date || '',
-          totalParticipants: result.totalParticipants ? String(result.totalParticipants) : '',
-          raceCount: result.raceCount ? String(result.raceCount) : ''
-        }));
+        setError('PDF konnte nicht vollständig gelesen werden.');
       } else if (!result.participant) {
-        setError(`Segelnummer "${boatData.segelnummer}" nicht gefunden. Prüfe die Einstellungen.`);
+        setError(`Segelnummer "${boatData.segelnummer}" nicht gefunden.`);
       } else {
         setSuccess(`${result.participant.name} gefunden: Platz ${result.participant.rank} von ${result.totalParticipants}`);
       }
       
     } catch (err) {
       console.error('PDF Error:', err);
-      setError('Fehler beim Lesen der PDF: ' + err.message);
-      setDebugText('Error: ' + err.message + '\n\nStack: ' + err.stack);
+      setError('Fehler: ' + err.message);
     } finally {
       setIsProcessing(false);
       setOcrProgress(null);
     }
   };
 
-  const handlePdfUpload = async (e) => {
-    const file = e.target.files?.[0];
-    await processPdfFile(file);
-    e.target.value = '';
-  };
-
-  const handleDragOver = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragging(true);
-  };
-
-  const handleDragLeave = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragging(false);
-  };
-
-  const handleDrop = async (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragging(false);
-    const file = e.dataTransfer.files?.[0];
-    await processPdfFile(file);
-  };
-
-  // Text aus Zwischenablage verarbeiten
-  const processPastedText = () => {
-    if (!pastedText.trim()) {
-      setError('Bitte füge zuerst Text ein');
+  // === RECHNUNG VERARBEITEN ===
+  const processInvoicePdf = async (file) => {
+    if (!file || !file.name.toLowerCase().endsWith('.pdf')) {
+      setError('Bitte eine PDF-Datei auswählen');
       return;
     }
     
-    if (!boatData.segelnummer) {
-      setError('Bitte zuerst die Segelnummer in den Einstellungen eingeben');
-      setActiveTab('settings');
-      return;
-    }
+    setInvoiceProcessing(true);
+    setError(null);
+    setOcrProgress(null);
     
-    console.log('Processing pasted text, length:', pastedText.length);
-    setDebugText(pastedText.substring(0, 3000));
-    
-    const result = parseRegattaPDF(pastedText, boatData.segelnummer);
-    
-    if (result.success) {
-      // Duplikat-Check
-      const isDuplicate = regatten.some(r => 
-        r.regattaName === result.regattaName && 
-        r.boatClass === result.boatClass
-      );
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const base64 = btoa(new Uint8Array(arrayBuffer).reduce((data, byte) => data + String.fromCharCode(byte), ''));
+      setCurrentInvoiceData(base64);
       
-      if (isDuplicate) {
-        setError(`Diese Regatta "${result.regattaName}" ist bereits in deiner Liste!`);
+      const { text } = await extractTextFromPDF(arrayBuffer, true, 'Rechnung: ');
+      console.log('Invoice text:', text.substring(0, 1000));
+      
+      const amount = extractInvoiceAmount(text);
+      
+      if (amount) {
+        setCurrentInvoiceAmount(amount.toFixed(2).replace('.', ','));
+        setSuccess(`Rechnungsbetrag erkannt: ${amount.toFixed(2).replace('.', ',')} €`);
+      } else {
+        setError('Rechnungsbetrag konnte nicht automatisch erkannt werden. Bitte manuell eingeben.');
+        setCurrentInvoiceAmount('');
       }
-    }
-    
-    setPdfResult(result);
-    
-    if (!result.success) {
-      setError('Text konnte nicht vollständig geparst werden. Prüfe die Debug-Ausgabe.');
-    } else if (!result.participant) {
-      setError(`Segelnummer "${boatData.segelnummer}" nicht gefunden.`);
-    } else {
-      setSuccess(`${result.participant.name} gefunden: Platz ${result.participant.rank} von ${result.totalParticipants}`);
-      setPasteMode(false);
-      setPastedText('');
+      
+    } catch (err) {
+      console.error('Invoice Error:', err);
+      setError('Fehler beim Lesen der Rechnung: ' + err.message);
+    } finally {
+      setInvoiceProcessing(false);
+      setOcrProgress(null);
     }
   };
 
   // === REGATTA HINZUFÜGEN ===
   const addRegattaFromPdf = () => {
     if (!pdfResult?.participant) {
-      setError('Keine gültigen Daten');
+      setError('Keine gültigen Ergebnisdaten');
       return;
     }
     
-    // Nochmal Duplikat-Check
-    const isDuplicate = regatten.some(r => 
-      r.regattaName === pdfResult.regattaName && 
-      r.boatClass === pdfResult.boatClass
-    );
+    if (!currentInvoiceData || !currentInvoiceAmount) {
+      setError('Bitte lade eine Rechnung hoch und gib den Betrag ein');
+      return;
+    }
     
-    if (isDuplicate) {
-      setError('Diese Regatta ist bereits in der Liste!');
+    const amount = parseFloat(currentInvoiceAmount.replace(',', '.'));
+    if (isNaN(amount) || amount <= 0) {
+      setError('Bitte einen gültigen Rechnungsbetrag eingeben');
       return;
     }
     
@@ -556,32 +463,33 @@ function App() {
       totalParticipants: pdfResult.totalParticipants,
       raceCount: pdfResult.raceCount || 0,
       sailorName: pdfResult.participant.name,
-      pdfData: currentPdfData, // PDF als Base64 speichern!
+      resultPdfData: currentPdfData,
+      invoicePdfData: currentInvoiceData,
+      invoiceAmount: amount,
       addedAt: new Date().toISOString()
     };
     
     setRegatten(prev => [...prev, newRegatta]);
     setPdfResult(null);
     setCurrentPdfData(null);
+    setCurrentInvoiceData(null);
+    setCurrentInvoiceAmount('');
     setDebugText('');
-    setSuccess(`"${pdfResult.regattaName}" wurde hinzugefügt!`);
+    setSuccess(`"${pdfResult.regattaName}" wurde hinzugefügt! (${amount.toFixed(2).replace('.', ',')} €)`);
     setActiveTab('list');
   };
 
   const addRegattaManual = () => {
-    const { regattaName, boatClass, date, placement, totalParticipants, raceCount } = manualData;
+    const { regattaName, boatClass, date, placement, totalParticipants, raceCount, invoiceAmount } = manualData;
     
-    if (!regattaName || !placement || !totalParticipants || !raceCount) {
-      setError('Bitte alle Pflichtfelder ausfüllen');
+    if (!regattaName || !placement || !totalParticipants || !invoiceAmount) {
+      setError('Bitte alle Pflichtfelder ausfüllen (Name, Platzierung, Teilnehmer, Rechnungsbetrag)');
       return;
     }
     
-    const isDuplicate = regatten.some(r => 
-      r.regattaName === regattaName && r.boatClass === (boatClass || boatData.bootsklasse)
-    );
-    
-    if (isDuplicate) {
-      setError('Diese Regatta ist bereits in der Liste!');
+    const amount = parseFloat(invoiceAmount.replace(',', '.'));
+    if (isNaN(amount) || amount <= 0) {
+      setError('Bitte einen gültigen Rechnungsbetrag eingeben');
       return;
     }
     
@@ -592,18 +500,67 @@ function App() {
       date,
       placement: parseInt(placement),
       totalParticipants: parseInt(totalParticipants),
-      raceCount: parseInt(raceCount),
+      raceCount: parseInt(raceCount) || 0,
       sailorName: boatData.seglername,
-      pdfData: currentPdfData, // Falls PDF vorhanden
+      resultPdfData: currentPdfData,
+      invoicePdfData: currentInvoiceData,
+      invoiceAmount: amount,
       addedAt: new Date().toISOString()
     };
     
     setRegatten(prev => [...prev, newRegatta]);
-    setManualData({ regattaName: '', boatClass: '', date: '', placement: '', totalParticipants: '', raceCount: '' });
+    setManualData({ regattaName: '', boatClass: '', date: '', placement: '', totalParticipants: '', raceCount: '', invoiceAmount: '' });
     setPdfResult(null);
     setCurrentPdfData(null);
+    setCurrentInvoiceData(null);
+    setCurrentInvoiceAmount('');
     setSuccess(`"${regattaName}" wurde hinzugefügt!`);
     setActiveTab('list');
+  };
+
+  // Rechnung zu bestehender Regatta hinzufügen
+  const addInvoiceToRegatta = async (regattaId, file) => {
+    if (!file) return;
+    
+    setInvoiceProcessing(true);
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const base64 = btoa(new Uint8Array(arrayBuffer).reduce((data, byte) => data + String.fromCharCode(byte), ''));
+      
+      const { text } = await extractTextFromPDF(arrayBuffer, true, 'Rechnung: ');
+      const amount = extractInvoiceAmount(text);
+      
+      setRegatten(prev => prev.map(r => {
+        if (r.id === regattaId) {
+          return {
+            ...r,
+            invoicePdfData: base64,
+            invoiceAmount: amount || r.invoiceAmount
+          };
+        }
+        return r;
+      }));
+      
+      if (amount) {
+        setSuccess(`Rechnung hinzugefügt: ${amount.toFixed(2).replace('.', ',')} €`);
+      } else {
+        setError('Rechnung hinzugefügt, aber Betrag nicht erkannt. Bitte manuell eingeben.');
+      }
+    } catch (err) {
+      setError('Fehler: ' + err.message);
+    } finally {
+      setInvoiceProcessing(false);
+      setOcrProgress(null);
+    }
+  };
+
+  const updateInvoiceAmount = (regattaId, amount) => {
+    const parsedAmount = parseFloat(amount.replace(',', '.'));
+    if (!isNaN(parsedAmount) && parsedAmount >= 0) {
+      setRegatten(prev => prev.map(r => 
+        r.id === regattaId ? { ...r, invoiceAmount: parsedAmount } : r
+      ));
+    }
   };
 
   const deleteRegatta = (id) => {
@@ -612,7 +569,7 @@ function App() {
     }
   };
 
-  // === BERECHNUNGEN ===
+  // === HILFSFUNKTIONEN ===
   const formatDate = (dateStr) => {
     if (!dateStr) return '-';
     const months = { 'JAN': '01', 'FEB': '02', 'MAR': '03', 'APR': '04', 'MAY': '05', 'JUN': '06', 'JUL': '07', 'AUG': '08', 'SEP': '09', 'OCT': '10', 'NOV': '11', 'DEC': '12' };
@@ -623,36 +580,17 @@ function App() {
     return dateStr;
   };
 
-  const calculateRefund = (placement, participants, races) => {
-    if (!placement || !participants || !races) return 0;
-    const percentile = (placement / participants) * 100;
-    let factor = 5;
-    if (percentile <= 10) factor = 10;
-    else if (percentile <= 25) factor = 8;
-    else if (percentile <= 50) factor = 6;
-    return Math.round(races * factor);
+  const formatAmount = (amount) => {
+    if (!amount && amount !== 0) return '-';
+    return amount.toFixed(2).replace('.', ',') + ' €';
   };
 
-  const totalRefund = regatten.reduce((sum, r) => 
-    sum + calculateRefund(r.placement, r.totalParticipants, r.raceCount), 0
-  );
+  // Gesamtsumme aus echten Rechnungsbeträgen
+  const totalRefund = regatten.reduce((sum, r) => sum + (r.invoiceAmount || 0), 0);
+  const regattasWithInvoice = regatten.filter(r => r.invoiceAmount > 0);
+  const regattasWithoutInvoice = regatten.filter(r => !r.invoiceAmount);
 
-  // === EXPORT FUNKTIONEN ===
-  const exportToCsv = () => {
-    const headers = ['Regatta', 'Bootsklasse', 'Datum', 'Platzierung', 'Teilnehmer', 'Wettfahrten', 'Erstattung'];
-    const rows = regatten.map(r => [
-      r.regattaName, r.boatClass, formatDate(r.date),
-      r.placement, r.totalParticipants, r.raceCount,
-      calculateRefund(r.placement, r.totalParticipants, r.raceCount) + '€'
-    ]);
-    const csv = [headers, ...rows].map(row => row.join(';')).join('\n');
-    const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `TSC_Startgeld_${new Date().toISOString().split('T')[0]}.csv`;
-    a.click();
-  };
-
+  // === PDF EXPORT ===
   const exportToPdf = async () => {
     if (regatten.length === 0) {
       setError('Keine Regatten zum Exportieren');
@@ -687,30 +625,30 @@ function App() {
     }
     y += 5;
     
-    // Tabelle
+    // Tabelle mit echten Rechnungsbeträgen
     const tableData = regatten.map(r => [
       r.regattaName,
       r.boatClass || '-',
       formatDate(r.date),
       `${r.placement}/${r.totalParticipants}`,
-      r.raceCount,
-      `${calculateRefund(r.placement, r.totalParticipants, r.raceCount)} EUR`
+      formatAmount(r.invoiceAmount)
     ]);
     
     doc.autoTable({
       startY: y,
-      head: [['Regatta', 'Klasse', 'Datum', 'Platz', 'Wettf.', 'Erstattung']],
+      head: [['Regatta', 'Klasse', 'Datum', 'Platz', 'Startgeld']],
       body: tableData,
       theme: 'grid',
       headStyles: { fillColor: [0, 82, 147], textColor: 255, fontStyle: 'bold' },
-      styles: { fontSize: 9, cellPadding: 2 }
+      styles: { fontSize: 9, cellPadding: 2 },
+      columnStyles: { 4: { halign: 'right' } }
     });
     
     // Summe
     const finalY = doc.lastAutoTable.finalY + 10;
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(12);
-    doc.text(`Gesamt-Erstattung: ${totalRefund} EUR`, pageWidth - 15, finalY, { align: 'right' });
+    doc.text(`Gesamt-Erstattungsbetrag: ${formatAmount(totalRefund)}`, pageWidth - 15, finalY, { align: 'right' });
     
     // Bankverbindung
     if (boatData.iban) {
@@ -727,16 +665,17 @@ function App() {
     doc.text('_'.repeat(40), 15, doc.internal.pageSize.getHeight() - 35);
     doc.text('Datum, Unterschrift', 15, doc.internal.pageSize.getHeight() - 30);
     
-    // Anhänge: PDFs der Regatten
-    const regattasWithPdf = regatten.filter(r => r.pdfData);
-    if (regattasWithPdf.length > 0) {
-      doc.setFontSize(8);
-      doc.text(`Anlagen: ${regattasWithPdf.length} Ergebnisliste(n) im Anhang`, 15, doc.internal.pageSize.getHeight() - 15);
-      
-      // Füge jede PDF als neue Seiten hinzu
-      for (const regatta of regattasWithPdf) {
+    // Anlagen Info
+    const pdfsCount = regatten.filter(r => r.resultPdfData || r.invoicePdfData).length;
+    doc.setFontSize(8);
+    doc.text(`Anlagen: ${pdfsCount} Ergebnisliste(n) und Rechnung(en) im Anhang`, 15, doc.internal.pageSize.getHeight() - 15);
+    
+    // Anhänge: PDFs
+    for (const regatta of regatten) {
+      // Ergebnisliste
+      if (regatta.resultPdfData) {
         try {
-          const pdfBytes = Uint8Array.from(atob(regatta.pdfData), c => c.charCodeAt(0));
+          const pdfBytes = Uint8Array.from(atob(regatta.resultPdfData), c => c.charCodeAt(0));
           const attachedPdf = await pdfjsLib.getDocument({ data: pdfBytes }).promise;
           
           for (let i = 1; i <= attachedPdf.numPages; i++) {
@@ -747,33 +686,75 @@ function App() {
             const canvas = document.createElement('canvas');
             canvas.width = viewport.width;
             canvas.height = viewport.height;
-            const ctx = canvas.getContext('2d');
-            
-            await page.render({ canvasContext: ctx, viewport }).promise;
+            await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
             
             const imgData = canvas.toDataURL('image/jpeg', 0.8);
             const pdfWidth = doc.internal.pageSize.getWidth() - 20;
             const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
-            
             doc.addImage(imgData, 'JPEG', 10, 10, pdfWidth, Math.min(pdfHeight, doc.internal.pageSize.getHeight() - 20));
           }
         } catch (err) {
-          console.error('Error adding PDF attachment:', err);
+          console.error('Error adding result PDF:', err);
+        }
+      }
+      
+      // Rechnung
+      if (regatta.invoicePdfData) {
+        try {
+          const pdfBytes = Uint8Array.from(atob(regatta.invoicePdfData), c => c.charCodeAt(0));
+          const attachedPdf = await pdfjsLib.getDocument({ data: pdfBytes }).promise;
+          
+          for (let i = 1; i <= attachedPdf.numPages; i++) {
+            doc.addPage();
+            const page = await attachedPdf.getPage(i);
+            const viewport = page.getViewport({ scale: 1.5 });
+            
+            const canvas = document.createElement('canvas');
+            canvas.width = viewport.width;
+            canvas.height = viewport.height;
+            await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+            
+            const imgData = canvas.toDataURL('image/jpeg', 0.8);
+            const pdfWidth = doc.internal.pageSize.getWidth() - 20;
+            const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
+            doc.addImage(imgData, 'JPEG', 10, 10, pdfWidth, Math.min(pdfHeight, doc.internal.pageSize.getHeight() - 20));
+          }
+        } catch (err) {
+          console.error('Error adding invoice PDF:', err);
         }
       }
     }
     
     doc.save(`TSC_Erstattungsantrag_${new Date().toISOString().split('T')[0]}.pdf`);
-    setSuccess('PDF-Antrag mit Anlagen wurde erstellt!');
+    setSuccess('PDF-Antrag mit allen Anlagen wurde erstellt!');
   };
 
-  // === PDF VORSCHAU ===
+  const exportToCsv = () => {
+    const headers = ['Regatta', 'Bootsklasse', 'Datum', 'Platzierung', 'Teilnehmer', 'Startgeld'];
+    const rows = regatten.map(r => [
+      r.regattaName, r.boatClass, formatDate(r.date),
+      r.placement, r.totalParticipants, formatAmount(r.invoiceAmount)
+    ]);
+    const csv = [headers, ...rows, ['', '', '', '', 'GESAMT:', formatAmount(totalRefund)]].map(row => row.join(';')).join('\n');
+    const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `TSC_Startgeld_${new Date().toISOString().split('T')[0]}.csv`;
+    a.click();
+  };
+
   const viewPdf = (pdfData) => {
-    const pdfBlob = new Blob(
-      [Uint8Array.from(atob(pdfData), c => c.charCodeAt(0))],
-      { type: 'application/pdf' }
-    );
+    const pdfBlob = new Blob([Uint8Array.from(atob(pdfData), c => c.charCodeAt(0))], { type: 'application/pdf' });
     window.open(URL.createObjectURL(pdfBlob), '_blank');
+  };
+
+  // Drag & Drop Handler
+  const handleDragOver = (e) => { e.preventDefault(); setIsDragging(true); };
+  const handleDragLeave = (e) => { e.preventDefault(); setIsDragging(false); };
+  const handleDropResult = async (e) => {
+    e.preventDefault();
+    setIsDragging(false);
+    await processResultPdf(e.dataTransfer.files?.[0]);
   };
 
   // === RENDER ===
@@ -793,7 +774,7 @@ function App() {
             {boatData.segelnummer && (
               <div className="text-right">
                 <div className="text-white font-mono">{boatData.segelnummer}</div>
-                <div className="text-blue-200 text-sm">{boatData.seglername || boatData.bootsklasse}</div>
+                <div className="text-blue-200 text-sm">{boatData.seglername}</div>
               </div>
             )}
           </div>
@@ -849,9 +830,10 @@ function App() {
         {activeTab === 'add' && (
           <div className="space-y-6">
             
-            {/* PDF Upload */}
+            {/* Step 1: Ergebnisliste */}
             <div className="bg-white/10 backdrop-blur-sm rounded-xl p-6 border border-white/20">
               <h3 className="text-lg font-semibold text-white mb-2 flex items-center gap-2">
+                <span className="bg-cyan-500 text-white w-6 h-6 rounded-full flex items-center justify-center text-sm">1</span>
                 📄 Ergebnisliste hochladen
               </h3>
               <p className="text-blue-200 text-sm mb-4">
@@ -861,188 +843,161 @@ function App() {
               <div
                 onDragOver={handleDragOver}
                 onDragLeave={handleDragLeave}
-                onDrop={handleDrop}
-                className={`border-2 border-dashed rounded-xl p-8 text-center transition-all cursor-pointer
-                  ${isDragging ? 'border-cyan-400 bg-cyan-500/20 scale-102' 
-                    : isProcessing ? 'border-cyan-400 bg-cyan-500/10'
-                    : 'border-white/30 hover:border-cyan-400 hover:bg-white/5'}`}
-                onClick={() => !isProcessing && document.getElementById('pdf-input').click()}
+                onDrop={handleDropResult}
+                className={`border-2 border-dashed rounded-xl p-6 text-center transition-all cursor-pointer
+                  ${pdfResult?.success ? 'border-green-400 bg-green-500/10' :
+                    isDragging ? 'border-cyan-400 bg-cyan-500/20' : 
+                    isProcessing ? 'border-cyan-400 bg-cyan-500/10' :
+                    'border-white/30 hover:border-cyan-400 hover:bg-white/5'}`}
+                onClick={() => !isProcessing && document.getElementById('result-pdf-input').click()}
               >
                 <input
                   type="file"
-                  id="pdf-input"
+                  id="result-pdf-input"
                   accept=".pdf"
-                  onChange={handlePdfUpload}
+                  onChange={(e) => processResultPdf(e.target.files?.[0])}
                   disabled={isProcessing}
                   className="hidden"
                 />
-                {isProcessing ? (
+                {isProcessing && !invoiceProcessing ? (
                   <div className="text-cyan-300">
-                    <div className="text-4xl mb-2 animate-pulse">⏳</div>
+                    <div className="text-3xl mb-2 animate-pulse">⏳</div>
                     {ocrProgress ? (
                       <div>
-                        <div className="font-medium mb-2">🔍 OCR läuft...</div>
                         <div className="text-sm mb-2">{ocrProgress.status}</div>
-                        <div className="w-full bg-white/20 rounded-full h-2">
-                          <div 
-                            className="bg-cyan-400 h-2 rounded-full transition-all duration-300"
-                            style={{ width: `${ocrProgress.percent}%` }}
-                          />
+                        <div className="w-full max-w-xs mx-auto bg-white/20 rounded-full h-2">
+                          <div className="bg-cyan-400 h-2 rounded-full transition-all" style={{ width: `${ocrProgress.percent}%` }} />
                         </div>
-                        <div className="text-xs mt-1">{ocrProgress.percent}%</div>
                       </div>
-                    ) : (
-                      <div>PDF wird verarbeitet...</div>
-                    )}
+                    ) : <div>Wird verarbeitet...</div>}
                   </div>
-                ) : isDragging ? (
-                  <div className="text-cyan-300">
-                    <div className="text-4xl mb-2">📥</div>
-                    <div className="font-medium">PDF hier ablegen</div>
+                ) : pdfResult?.success ? (
+                  <div className="text-green-300">
+                    <div className="text-3xl mb-2">✅</div>
+                    <div className="font-medium">{pdfResult.regattaName}</div>
+                    <div className="text-sm">Platz {pdfResult.participant?.rank} von {pdfResult.totalParticipants}</div>
                   </div>
                 ) : (
                   <div className="text-blue-200">
-                    <div className="text-4xl mb-2">📤</div>
-                    <div className="font-medium text-white">PDF-Datei auswählen</div>
-                    <div className="text-sm mt-1">oder hierher ziehen</div>
+                    <div className="text-3xl mb-2">📤</div>
+                    <div className="font-medium text-white">PDF auswählen oder hierher ziehen</div>
                   </div>
                 )}
               </div>
             </div>
 
-            {/* Text-Paste Mode */}
-            {pasteMode && (
-              <div className="bg-yellow-500/10 backdrop-blur-sm rounded-xl p-6 border border-yellow-400/30">
+            {/* Step 2: Rechnung */}
+            {pdfResult?.success && (
+              <div className="bg-white/10 backdrop-blur-sm rounded-xl p-6 border border-white/20">
                 <h3 className="text-lg font-semibold text-white mb-2 flex items-center gap-2">
-                  📋 Text aus PDF einfügen
+                  <span className="bg-cyan-500 text-white w-6 h-6 rounded-full flex items-center justify-center text-sm">2</span>
+                  🧾 Rechnung hochladen
                 </h3>
-                <p className="text-yellow-200 text-sm mb-4">
-                  Die PDF konnte nicht automatisch gelesen werden. Bitte:
+                <p className="text-blue-200 text-sm mb-4">
+                  Lade die Startgeld-Rechnung hoch. Der Betrag wird automatisch erkannt.
                 </p>
-                <ol className="text-yellow-200 text-sm mb-4 list-decimal list-inside space-y-1">
-                  <li>Öffne die PDF in Chrome oder Adobe Reader</li>
-                  <li>Markiere alles (Strg+A)</li>
-                  <li>Kopiere (Strg+C)</li>
-                  <li>Füge hier ein (Strg+V)</li>
-                </ol>
                 
-                <textarea
-                  value={pastedText}
-                  onChange={(e) => setPastedText(e.target.value)}
-                  placeholder="Text hier einfügen..."
-                  className="w-full h-40 px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white text-sm font-mono resize-none"
-                />
+                <div
+                  className={`border-2 border-dashed rounded-xl p-6 text-center transition-all cursor-pointer
+                    ${currentInvoiceData ? 'border-green-400 bg-green-500/10' :
+                      invoiceProcessing ? 'border-cyan-400 bg-cyan-500/10' :
+                      'border-white/30 hover:border-cyan-400 hover:bg-white/5'}`}
+                  onClick={() => !invoiceProcessing && document.getElementById('invoice-pdf-input').click()}
+                >
+                  <input
+                    type="file"
+                    id="invoice-pdf-input"
+                    accept=".pdf"
+                    onChange={(e) => processInvoicePdf(e.target.files?.[0])}
+                    disabled={invoiceProcessing}
+                    className="hidden"
+                  />
+                  {invoiceProcessing ? (
+                    <div className="text-cyan-300">
+                      <div className="text-3xl mb-2 animate-pulse">⏳</div>
+                      {ocrProgress ? (
+                        <div>
+                          <div className="text-sm mb-2">{ocrProgress.status}</div>
+                          <div className="w-full max-w-xs mx-auto bg-white/20 rounded-full h-2">
+                            <div className="bg-cyan-400 h-2 rounded-full transition-all" style={{ width: `${ocrProgress.percent}%` }} />
+                          </div>
+                        </div>
+                      ) : <div>Rechnung wird verarbeitet...</div>}
+                    </div>
+                  ) : currentInvoiceData ? (
+                    <div className="text-green-300">
+                      <div className="text-3xl mb-2">✅</div>
+                      <div className="font-medium">Rechnung hochgeladen</div>
+                    </div>
+                  ) : (
+                    <div className="text-blue-200">
+                      <div className="text-3xl mb-2">🧾</div>
+                      <div className="font-medium text-white">Rechnung auswählen</div>
+                    </div>
+                  )}
+                </div>
                 
-                <div className="flex gap-3 mt-4">
-                  <button
-                    onClick={processPastedText}
-                    disabled={!pastedText.trim()}
-                    className="flex-1 py-3 px-4 rounded-lg font-medium bg-yellow-500 hover:bg-yellow-400 text-black transition-all disabled:opacity-50"
-                  >
-                    ✨ Text verarbeiten
-                  </button>
-                  <button
-                    onClick={() => { setPasteMode(false); setPastedText(''); }}
-                    className="py-3 px-4 rounded-lg font-medium bg-white/10 hover:bg-white/20 text-white"
-                  >
-                    ✕ Abbrechen
-                  </button>
+                {/* Betrag Eingabe */}
+                <div className="mt-4">
+                  <label className="block text-blue-200 text-sm mb-1">Rechnungsbetrag (Startgeld) *</label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={currentInvoiceAmount}
+                      onChange={(e) => setCurrentInvoiceAmount(e.target.value)}
+                      placeholder="z.B. 45,00"
+                      className="flex-1 px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white text-lg font-mono"
+                    />
+                    <span className="text-white text-lg">€</span>
+                  </div>
+                  <p className="text-blue-300 text-xs mt-1">
+                    {currentInvoiceData ? 'Betrag wurde automatisch erkannt. Bitte prüfen!' : 'Wird automatisch aus der Rechnung extrahiert.'}
+                  </p>
                 </div>
               </div>
             )}
 
-            {/* PDF Result */}
-            {pdfResult && (
-              <div className="bg-white/10 backdrop-blur-sm rounded-xl p-6 border border-white/20">
-                <h3 className="text-lg font-semibold text-white mb-4">✨ Extrahierte Daten</h3>
+            {/* Step 3: Bestätigen */}
+            {pdfResult?.success && currentInvoiceAmount && (
+              <div className="bg-green-500/20 backdrop-blur-sm rounded-xl p-6 border border-green-400/30">
+                <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+                  <span className="bg-green-500 text-white w-6 h-6 rounded-full flex items-center justify-center text-sm">3</span>
+                  ✅ Zusammenfassung
+                </h3>
                 
-                <div className="grid grid-cols-2 gap-4 mb-4">
+                <div className="grid grid-cols-2 gap-4 mb-4 text-sm">
                   <div>
-                    <div className="text-blue-300 text-sm">Regatta</div>
-                    <div className="text-white font-medium">{pdfResult.regattaName || '-'}</div>
+                    <div className="text-green-300">Regatta</div>
+                    <div className="text-white font-medium">{pdfResult.regattaName}</div>
                   </div>
                   <div>
-                    <div className="text-blue-300 text-sm">Bootsklasse</div>
-                    <div className="text-white font-medium">{pdfResult.boatClass || '-'}</div>
+                    <div className="text-green-300">Platzierung</div>
+                    <div className="text-white font-medium">{pdfResult.participant?.rank} von {pdfResult.totalParticipants}</div>
                   </div>
                   <div>
-                    <div className="text-blue-300 text-sm">Datum</div>
+                    <div className="text-green-300">Datum</div>
                     <div className="text-white font-medium">{formatDate(pdfResult.date)}</div>
                   </div>
                   <div>
-                    <div className="text-blue-300 text-sm">Wettfahrten</div>
-                    <div className="text-white font-medium">{pdfResult.raceCount || '-'}</div>
+                    <div className="text-green-300">Startgeld</div>
+                    <div className="text-white font-bold text-xl">{currentInvoiceAmount} €</div>
                   </div>
                 </div>
                 
-                {pdfResult.participant ? (
-                  <div className="bg-green-500/20 border border-green-400/30 rounded-lg p-4 mb-4">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <div className="text-green-300 text-sm">Deine Platzierung</div>
-                        <div className="text-2xl font-bold text-white">
-                          Platz {pdfResult.participant.rank}
-                          <span className="text-lg font-normal text-green-200"> von {pdfResult.totalParticipants}</span>
-                        </div>
-                        <div className="text-green-200 text-sm mt-1">{pdfResult.participant.name}</div>
-                      </div>
-                      <div className="text-right">
-                        <div className="text-green-300 text-sm">Erstattung ca.</div>
-                        <div className="text-2xl font-bold text-white">
-                          {calculateRefund(pdfResult.participant.rank, pdfResult.totalParticipants, pdfResult.raceCount)}€
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="bg-yellow-500/20 border border-yellow-400/30 rounded-lg p-4 mb-4">
-                    <div className="text-yellow-200">
-                      ⚠️ Segelnummer "{boatData.segelnummer}" nicht gefunden.
-                    </div>
-                  </div>
-                )}
-                
-                <div className="flex gap-3">
-                  {pdfResult.participant && (
-                    <button
-                      onClick={addRegattaFromPdf}
-                      className="flex-1 py-3 px-4 rounded-lg font-medium bg-green-500 hover:bg-green-400 text-white transition-all"
-                    >
-                      ✅ Zur Liste hinzufügen
-                    </button>
-                  )}
-                  <button
-                    onClick={() => { setPdfResult(null); setDebugText(''); }}
-                    className="py-3 px-4 rounded-lg font-medium bg-white/10 hover:bg-white/20 text-white transition-all"
-                  >
-                    ✕ Verwerfen
-                  </button>
-                </div>
+                <button
+                  onClick={addRegattaFromPdf}
+                  className="w-full py-3 px-4 rounded-lg font-medium bg-green-500 hover:bg-green-400 text-white transition-all text-lg"
+                >
+                  ✅ Zur Liste hinzufügen
+                </button>
               </div>
             )}
 
-            {/* Debug Text */}
-            {debugText && (
-              <details className="bg-white/5 rounded-xl p-4 border border-white/10">
-                <summary className="text-cyan-300 cursor-pointer">🔍 Debug: Extrahierter Text</summary>
-                <pre className="mt-2 text-xs text-blue-200 whitespace-pre-wrap max-h-60 overflow-auto bg-black/30 p-3 rounded">
-                  {debugText}
-                </pre>
-              </details>
-            )}
-
-            {/* Manual Entry */}
-            <div className="flex justify-center gap-4 text-sm">
+            {/* Manuell eingeben */}
+            <div className="text-center">
               <button
-                onClick={() => { setPasteMode(!pasteMode); setManualMode(false); }}
-                className="text-cyan-300 hover:text-cyan-200 underline"
-              >
-                {pasteMode ? '← Zurück' : '📋 Text einfügen'}
-              </button>
-              <span className="text-white/30">|</span>
-              <button
-                onClick={() => { setManualMode(!manualMode); setPasteMode(false); }}
-                className="text-cyan-300 hover:text-cyan-200 underline"
+                onClick={() => setManualMode(!manualMode)}
+                className="text-cyan-300 hover:text-cyan-200 text-sm underline"
               >
                 {manualMode ? '← Zurück' : '✏️ Manuell eingeben'}
               </button>
@@ -1099,11 +1054,21 @@ function App() {
                     />
                   </div>
                   <div>
-                    <label className="block text-blue-200 text-sm mb-1">Wettfahrten *</label>
+                    <label className="block text-blue-200 text-sm mb-1">Wettfahrten</label>
                     <input
                       type="number"
                       value={manualData.raceCount}
                       onChange={e => setManualData(d => ({ ...d, raceCount: e.target.value }))}
+                      className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-blue-200 text-sm mb-1">Startgeld (€) *</label>
+                    <input
+                      type="text"
+                      value={manualData.invoiceAmount}
+                      onChange={e => setManualData(d => ({ ...d, invoiceAmount: e.target.value }))}
+                      placeholder="z.B. 45,00"
                       className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white"
                     />
                   </div>
@@ -1117,6 +1082,16 @@ function App() {
                 </button>
               </div>
             )}
+
+            {/* Debug */}
+            {debugText && (
+              <details className="bg-white/5 rounded-xl p-4 border border-white/10">
+                <summary className="text-cyan-300 cursor-pointer text-sm">🔍 Debug</summary>
+                <pre className="mt-2 text-xs text-blue-200 whitespace-pre-wrap max-h-40 overflow-auto bg-black/30 p-2 rounded">
+                  {debugText}
+                </pre>
+              </details>
+            )}
           </div>
         )}
 
@@ -1124,23 +1099,27 @@ function App() {
         {activeTab === 'list' && (
           <div className="space-y-4">
             
+            {/* Zusammenfassung */}
             {regatten.length > 0 && (
               <div className="bg-white/10 backdrop-blur-sm rounded-xl p-4 border border-white/20">
                 <div className="flex items-center justify-between mb-4">
                   <div>
                     <span className="text-blue-200">Gesamt-Erstattung:</span>
-                    <span className="text-2xl font-bold text-white ml-2">{totalRefund}€</span>
+                    <span className="text-3xl font-bold text-white ml-2">{formatAmount(totalRefund)}</span>
                   </div>
-                  <div className="text-sm text-blue-200">
-                    {regatten.filter(r => r.pdfData).length} von {regatten.length} mit PDF
+                  <div className="text-sm text-blue-200 text-right">
+                    <div>{regattasWithInvoice.length} Rechnung(en)</div>
+                    {regattasWithoutInvoice.length > 0 && (
+                      <div className="text-yellow-300">{regattasWithoutInvoice.length} ohne Rechnung</div>
+                    )}
                   </div>
                 </div>
                 <div className="flex gap-2">
                   <button
                     onClick={exportToPdf}
-                    className="flex-1 px-4 py-2 bg-cyan-500 hover:bg-cyan-400 text-white rounded-lg font-medium flex items-center justify-center gap-2"
+                    className="flex-1 px-4 py-2 bg-cyan-500 hover:bg-cyan-400 text-white rounded-lg font-medium"
                   >
-                    📄 PDF-Antrag mit Anlagen
+                    📄 PDF-Antrag erstellen
                   </button>
                   <button
                     onClick={exportToCsv}
@@ -1152,6 +1131,7 @@ function App() {
               </div>
             )}
 
+            {/* Liste */}
             {regatten.length === 0 ? (
               <div className="bg-white/10 backdrop-blur-sm rounded-xl p-8 border border-white/20 text-center">
                 <div className="text-4xl mb-3">📋</div>
@@ -1169,29 +1149,45 @@ function App() {
                   <div key={r.id} className="bg-white/10 backdrop-blur-sm rounded-xl p-4 border border-white/20">
                     <div className="flex items-start justify-between">
                       <div className="flex-1">
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <h4 className="text-white font-medium">{r.regattaName}</h4>
-                          {r.pdfData && (
-                            <button
-                              onClick={() => viewPdf(r.pdfData)}
-                              className="text-cyan-300 hover:text-cyan-200 text-xs px-2 py-0.5 bg-cyan-500/20 rounded"
-                            >
-                              📄 PDF
+                          {r.resultPdfData && (
+                            <button onClick={() => viewPdf(r.resultPdfData)} className="text-cyan-300 hover:text-cyan-200 text-xs px-2 py-0.5 bg-cyan-500/20 rounded">
+                              📄 Ergebnis
+                            </button>
+                          )}
+                          {r.invoicePdfData && (
+                            <button onClick={() => viewPdf(r.invoicePdfData)} className="text-green-300 hover:text-green-200 text-xs px-2 py-0.5 bg-green-500/20 rounded">
+                              🧾 Rechnung
                             </button>
                           )}
                         </div>
                         <div className="text-blue-200 text-sm mt-1">
-                          {r.boatClass} • {formatDate(r.date)} • {r.raceCount} Wettfahrten
+                          {r.boatClass} • {formatDate(r.date)} • Platz {r.placement}/{r.totalParticipants}
                         </div>
                       </div>
-                      <div className="text-right">
-                        <div className="text-white font-bold">
-                          Platz {r.placement}/{r.totalParticipants}
-                        </div>
-                        <div className="text-cyan-300 font-medium">
-                          {calculateRefund(r.placement, r.totalParticipants, r.raceCount)}€
-                        </div>
+                      
+                      <div className="text-right ml-4">
+                        {r.invoiceAmount > 0 ? (
+                          <div className="text-green-300 font-bold text-xl">{formatAmount(r.invoiceAmount)}</div>
+                        ) : (
+                          <div className="space-y-1">
+                            <div className="text-yellow-300 text-sm">Keine Rechnung</div>
+                            <label className="block">
+                              <span className="text-xs text-cyan-300 hover:text-cyan-200 cursor-pointer underline">
+                                + Rechnung hinzufügen
+                              </span>
+                              <input
+                                type="file"
+                                accept=".pdf"
+                                className="hidden"
+                                onChange={(e) => addInvoiceToRegatta(r.id, e.target.files?.[0])}
+                              />
+                            </label>
+                          </div>
+                        )}
                       </div>
+                      
                       <button
                         onClick={() => deleteRegatta(r.id)}
                         className="ml-3 text-red-300 hover:text-red-200 p-1"
@@ -1199,6 +1195,20 @@ function App() {
                         🗑️
                       </button>
                     </div>
+                    
+                    {/* Betrag editieren */}
+                    {r.invoicePdfData && (
+                      <div className="mt-2 pt-2 border-t border-white/10 flex items-center gap-2">
+                        <span className="text-blue-200 text-sm">Betrag:</span>
+                        <input
+                          type="text"
+                          value={r.invoiceAmount?.toFixed(2).replace('.', ',') || ''}
+                          onChange={(e) => updateInvoiceAmount(r.id, e.target.value)}
+                          className="w-24 px-2 py-1 bg-white/10 border border-white/20 rounded text-white text-sm font-mono"
+                        />
+                        <span className="text-blue-200 text-sm">€</span>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -1281,7 +1291,7 @@ function App() {
               <div className="space-y-3">
                 <button
                   onClick={() => {
-                    const data = { boatData, regatten, exportDate: new Date().toISOString() };
+                    const data = { boatData, regatten, exportDate: new Date().toISOString(), version: 'v6' };
                     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
                     const a = document.createElement('a');
                     a.href = URL.createObjectURL(blob);
@@ -1316,7 +1326,6 @@ function App() {
                   onClick={() => {
                     if (confirm('Alle Regatten löschen?')) {
                       setRegatten([]);
-                      setSuccess('Alle Regatten gelöscht');
                     }
                   }}
                   className="w-full py-2 px-4 bg-red-500/20 hover:bg-red-500/30 text-red-200 rounded-lg"
