@@ -167,10 +167,73 @@ function App() {
   const [invoiceProcessing, setInvoiceProcessing] = useState(false);
   const [isDraggingInvoice, setIsDraggingInvoice] = useState(false);
   
+  // Temporäre PDF-Speicherung für Anhänge (nicht in localStorage!)
+  const [pdfAttachments, setPdfAttachments] = useState([]);
+  
   // Manuelle Korrektur State
   const [manualPlacement, setManualPlacement] = useState('');
   const [manualTotalParticipants, setManualTotalParticipants] = useState('');
   const [manualRegattaName, setManualRegattaName] = useState('');
+  
+  // Crew-Verwaltung für Mehrpersonenboote
+  const [crewMembers, setCrewMembers] = useState([]);
+  
+  // Einreichungs-State
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  
+  // Hilfsfunktion: Minimale Crew-Anzahl
+  const getMinCrewCount = (boatClass) => {
+    const config = BOAT_CLASSES[boatClass];
+    if (!config) return 1;
+    const maxCrew = config.crew;
+    // Bei 4-5 Personen-Booten ist 1 weniger OK
+    if (maxCrew >= 4) return maxCrew - 1;
+    return maxCrew;
+  };
+  
+  const getMaxCrewCount = (boatClass) => {
+    const config = BOAT_CLASSES[boatClass];
+    return config ? config.crew : 1;
+  };
+  
+  // Aktuelle Bootsklasse (aus PDF oder Bootsdaten)
+  const currentBoatClass = pdfResult?.boatClass || boatData.bootsklasse;
+  const maxCrew = getMaxCrewCount(currentBoatClass);
+  const minCrew = getMinCrewCount(currentBoatClass);
+  
+  // Crew initialisieren wenn Bootsklasse sich ändert
+  useEffect(() => {
+    if (maxCrew > 1 && crewMembers.length === 0) {
+      // Ersten Eintrag mit Seglername vorausfüllen
+      const initialCrew = [{ name: boatData.seglername || '', verein: 'TSC' }];
+      // Restliche Plätze leer
+      for (let i = 1; i < minCrew; i++) {
+        initialCrew.push({ name: '', verein: '' });
+      }
+      setCrewMembers(initialCrew);
+    }
+  }, [maxCrew, minCrew, boatData.seglername]);
+  
+  // Crew-Mitglied hinzufügen
+  const addCrewMember = () => {
+    if (crewMembers.length < maxCrew) {
+      setCrewMembers(prev => [...prev, { name: '', verein: '' }]);
+    }
+  };
+  
+  // Crew-Mitglied entfernen
+  const removeCrewMember = (index) => {
+    if (crewMembers.length > minCrew) {
+      setCrewMembers(prev => prev.filter((_, i) => i !== index));
+    }
+  };
+  
+  // Crew-Mitglied aktualisieren
+  const updateCrewMember = (index, field, value) => {
+    setCrewMembers(prev => prev.map((member, i) => 
+      i === index ? { ...member, [field]: value } : member
+    ));
+  };
   
   // Manuelle Eingabe State
   const [manualData, setManualData] = useState({
@@ -744,6 +807,19 @@ function App() {
         return;
       }
       
+      // Crew-Validierung bei Mehrpersonenbooten
+      const boatClass = pdfResult.boatClass || boatData.bootsklasse;
+      const requiredCrew = getMinCrewCount(boatClass);
+      const maxCrewForClass = getMaxCrewCount(boatClass);
+      
+      if (maxCrewForClass > 1) {
+        const filledCrew = crewMembers.filter(m => m.name.trim());
+        if (filledCrew.length < requiredCrew) {
+          setError(`Bitte mindestens ${requiredCrew} Crewmitglieder angeben (${boatClass} benötigt ${requiredCrew}-${maxCrewForClass} Personen)`);
+          return;
+        }
+      }
+      
       const newRegatta = {
         id: Date.now(),
         regattaName: regattaName,
@@ -753,6 +829,8 @@ function App() {
         totalParticipants: totalParticipants || 0,
         raceCount: pdfResult.raceCount || 0,
         sailorName: pdfResult.participant?.name || boatData.seglername,
+        // Crew speichern (nur ausgefüllte)
+        crew: maxCrewForClass > 1 ? crewMembers.filter(m => m.name.trim()) : [],
         // PDF-Daten werden NICHT mehr gespeichert (localStorage Limit)
         resultPdfData: null,
         invoicePdfData: null,
@@ -761,6 +839,16 @@ function App() {
       };
       
       console.log('Adding regatta:', newRegatta);
+      
+      // PDFs für Anhänge speichern (temporär, nicht in localStorage)
+      if (currentPdfData || currentInvoiceData) {
+        setPdfAttachments(prev => [...prev, {
+          regattaId: newRegatta.id,
+          regattaName: regattaName,
+          resultPdf: currentPdfData,
+          invoicePdf: currentInvoiceData
+        }]);
+      }
       
       setRegatten(prev => [...prev, newRegatta]);
       
@@ -772,6 +860,7 @@ function App() {
       setManualPlacement('');
       setManualTotalParticipants('');
       setManualRegattaName('');
+      setCrewMembers([]);
       setDebugText('');
       
       setSuccess(`"${regattaName}" wurde hinzugefügt! (${amount.toFixed(2).replace('.', ',')} €)`);
@@ -797,15 +886,30 @@ function App() {
       return;
     }
     
+    // Crew-Validierung bei Mehrpersonenbooten
+    const usedBoatClass = boatClass || boatData.bootsklasse;
+    const requiredCrew = getMinCrewCount(usedBoatClass);
+    const maxCrewForClass = getMaxCrewCount(usedBoatClass);
+    
+    if (maxCrewForClass > 1) {
+      const filledCrew = crewMembers.filter(m => m.name.trim());
+      if (filledCrew.length < requiredCrew) {
+        setError(`Bitte mindestens ${requiredCrew} Crewmitglieder angeben (${usedBoatClass} benötigt ${requiredCrew}-${maxCrewForClass} Personen)`);
+        return;
+      }
+    }
+    
     const newRegatta = {
       id: Date.now(),
       regattaName,
-      boatClass: boatClass || boatData.bootsklasse,
+      boatClass: usedBoatClass,
       date,
       placement: parseInt(placement),
       totalParticipants: parseInt(totalParticipants),
       raceCount: parseInt(raceCount) || 0,
       sailorName: boatData.seglername,
+      // Crew speichern (nur ausgefüllte)
+      crew: maxCrewForClass > 1 ? crewMembers.filter(m => m.name.trim()) : [],
       // PDF-Daten werden NICHT mehr gespeichert (localStorage Limit)
       resultPdfData: null,
       invoicePdfData: null,
@@ -819,6 +923,7 @@ function App() {
     setCurrentPdfData(null);
     setCurrentInvoiceData(null);
     setCurrentInvoiceAmount('');
+    setCrewMembers([]);
     setSuccess(`"${regattaName}" wurde hinzugefügt!`);
     setActiveTab('list');
   };
@@ -826,10 +931,12 @@ function App() {
   // === BERECHNUNGEN ===
   const totalAmount = regatten.reduce((sum, r) => sum + (r.invoiceAmount || 0), 0);
 
-  // === PDF EXPORT (Gesamtantrag) ===
-  const generatePDF = () => {
+  // === PDF EXPORT (Gesamtantrag mit Anhängen) ===
+  const generatePDF = async () => {
     try {
       const doc = new jsPDF();
+      
+      // === SEITE 1: ANTRAGSFORMULAR ===
       
       // Header
       doc.setFontSize(20);
@@ -907,19 +1014,41 @@ function App() {
         styles: { fontSize: 9 }
       });
       
-      // Anlagen-Hinweis
+      // Anlagen-Liste
       const afterTableY = doc.lastAutoTable.finalY + 15;
       doc.setFontSize(10);
       doc.setFont('helvetica', 'bold');
-      doc.text('Anlagen:', 20, afterTableY);
+      doc.text('Anlagen (siehe folgende Seiten):', 20, afterTableY);
       doc.setFont('helvetica', 'normal');
-      doc.text([
-        `• ${regatten.length} Ergebnisliste(n) als PDF`,
-        `• ${regatten.length} Rechnung(en) als PDF`
-      ], 25, afterTableY + 6);
+      
+      let anlagenY = afterTableY + 6;
+      regatten.forEach((r, i) => {
+        doc.text(`${i + 1}. ${r.regattaName || 'Regatta'}: Ergebnisliste + Rechnung`, 25, anlagenY);
+        anlagenY += 5;
+      });
+      
+      // Crew-Details (falls vorhanden)
+      const regattasWithCrew = regatten.filter(r => r.crew && r.crew.length > 0);
+      if (regattasWithCrew.length > 0) {
+        anlagenY += 10;
+        doc.setFont('helvetica', 'bold');
+        doc.text('Crew-Besetzungen:', 20, anlagenY);
+        doc.setFont('helvetica', 'normal');
+        anlagenY += 6;
+        
+        regattasWithCrew.forEach((r, i) => {
+          const crewList = r.crew.map((c, idx) => {
+            const vereinText = c.verein ? ` (${c.verein})` : '';
+            return `${idx + 1}. ${c.name}${vereinText}`;
+          }).join(', ');
+          doc.setFontSize(9);
+          doc.text(`${r.regattaName}: ${crewList}`, 25, anlagenY, { maxWidth: 165 });
+          anlagenY += 8;
+        });
+      }
       
       // Unterschriften
-      const signY = afterTableY + 35;
+      const signY = Math.max(anlagenY + 20, 240);
       doc.setDrawColor(100);
       doc.line(20, signY, 85, signY);
       doc.line(115, signY, 180, signY);
@@ -933,14 +1062,111 @@ function App() {
       doc.setTextColor(128);
       doc.text(`Erstellt am ${new Date().toLocaleDateString('de-DE')} um ${new Date().toLocaleTimeString('de-DE')}`, 105, 285, { align: 'center' });
       
+      // === ANHÄNGE: PDFs als Bilder einfügen ===
+      let pageNum = 1;
+      
+      for (const attachment of pdfAttachments) {
+        // Ergebnisliste
+        if (attachment.resultPdf) {
+          try {
+            doc.addPage();
+            pageNum++;
+            doc.setFontSize(10);
+            doc.setFont('helvetica', 'bold');
+            doc.setTextColor(0);
+            doc.text(`Anlage ${pageNum - 1}a: Ergebnisliste - ${attachment.regattaName}`, 20, 15);
+            doc.setFont('helvetica', 'normal');
+            doc.setFontSize(8);
+            doc.setTextColor(128);
+            doc.text('(Original-PDF als separate Datei beigefügt)', 20, 22);
+          } catch (e) {
+            console.error('Error adding result PDF:', e);
+          }
+        }
+        
+        // Rechnung
+        if (attachment.invoicePdf) {
+          try {
+            doc.addPage();
+            pageNum++;
+            doc.setFontSize(10);
+            doc.setFont('helvetica', 'bold');
+            doc.setTextColor(0);
+            doc.text(`Anlage ${pageNum - 1}b: Rechnung - ${attachment.regattaName}`, 20, 15);
+            doc.setFont('helvetica', 'normal');
+            doc.setFontSize(8);
+            doc.setTextColor(128);
+            doc.text('(Original-PDF als separate Datei beigefügt)', 20, 22);
+          } catch (e) {
+            console.error('Error adding invoice PDF:', e);
+          }
+        }
+      }
+      
       const filename = `TSC_Erstattungsantrag_${boatData.seglername?.replace(/\s/g, '_') || 'Antrag'}_${new Date().toISOString().slice(0,10)}.pdf`;
       doc.save(filename);
       setSuccess('PDF-Antrag wurde erstellt');
+      return doc;
       
     } catch (err) {
       console.error('PDF Error:', err);
       setError('Fehler beim Erstellen des PDFs: ' + err.message);
+      return null;
     }
+  };
+
+  // === ALLE DOKUMENTE HERUNTERLADEN ===
+  const downloadAllDocuments = () => {
+    try {
+      // 1. Gesamtantrag
+      generatePDF();
+      
+      // 2. CSV
+      generateCSV();
+      
+      // 3. Original-PDFs einzeln herunterladen
+      pdfAttachments.forEach((attachment, index) => {
+        const regattaName = attachment.regattaName?.replace(/[^a-zA-Z0-9äöüÄÖÜß]/g, '_') || `Regatta_${index + 1}`;
+        
+        if (attachment.resultPdf) {
+          const blob = base64ToBlob(attachment.resultPdf, 'application/pdf');
+          downloadBlob(blob, `${index + 1}_Ergebnis_${regattaName}.pdf`);
+        }
+        
+        if (attachment.invoicePdf) {
+          const blob = base64ToBlob(attachment.invoicePdf, 'application/pdf');
+          downloadBlob(blob, `${index + 1}_Rechnung_${regattaName}.pdf`);
+        }
+      });
+      
+      setSuccess(`${2 + pdfAttachments.length * 2} Dateien werden heruntergeladen`);
+      
+    } catch (err) {
+      console.error('Download Error:', err);
+      setError('Fehler beim Herunterladen: ' + err.message);
+    }
+  };
+
+  // Hilfsfunktionen für Downloads
+  const base64ToBlob = (base64, mimeType) => {
+    const byteCharacters = atob(base64);
+    const byteNumbers = new Array(byteCharacters.length);
+    for (let i = 0; i < byteCharacters.length; i++) {
+      byteNumbers[i] = byteCharacters.charCodeAt(i);
+    }
+    const byteArray = new Uint8Array(byteNumbers);
+    return new Blob([byteArray], { type: mimeType });
+  };
+
+  const downloadBlob = (blob, filename) => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 100);
   };
 
   // === CSV EXPORT (Ein Buchungssatz) ===
@@ -982,20 +1208,97 @@ function App() {
     }
   };
 
-  // === ANTRAG EINREICHEN (per Mail) ===
-  const submitApplication = () => {
+  // === ONLINE EINREICHEN (FormSubmit.co) ===
+  const submitOnline = async () => {
+    if (regatten.length === 0) {
+      setError('Keine Regatten zum Einreichen');
+      return;
+    }
+    
+    setIsSubmitting(true);
+    
     try {
-      // Erst PDFs generieren
-      generatePDF();
-      generateCSV();
+      // FormData erstellen
+      const formData = new FormData();
+      
+      // Basis-Daten
+      formData.append('_subject', `TSC Startgeld-Erstattung: ${boatData.seglername} - ${totalAmount.toFixed(2)} €`);
+      formData.append('Antragsteller', boatData.seglername || '-');
+      formData.append('Segelnummer', boatData.segelnummer || '-');
+      formData.append('Bootsklasse', boatData.bootsklasse || '-');
+      formData.append('IBAN', boatData.iban || '-');
+      formData.append('Kontoinhaber', boatData.kontoinhaber || '-');
+      formData.append('Gesamtbetrag', `${totalAmount.toFixed(2)} €`);
+      formData.append('Anzahl_Regatten', regatten.length.toString());
+      
+      // Regatten-Details inkl. Crew
+      regatten.forEach((r, i) => {
+        let details = `${r.regattaName}: ${r.invoiceAmount?.toFixed(2) || '0'} € (Platz ${r.placement || '?'} von ${r.totalParticipants || '?'})`;
+        if (r.crew && r.crew.length > 0) {
+          const crewList = r.crew.map(c => `${c.name}${c.verein ? ` (${c.verein})` : ''}`).join(', ');
+          details += ` | Crew: ${crewList}`;
+        }
+        formData.append(`Regatta_${i + 1}`, details);
+      });
+      
+      // PDF-Anhänge als Files
+      pdfAttachments.forEach((attachment, index) => {
+        if (attachment.resultPdf) {
+          const blob = base64ToBlob(attachment.resultPdf, 'application/pdf');
+          formData.append(`Ergebnis_${index + 1}`, blob, `Ergebnis_${attachment.regattaName?.replace(/[^a-zA-Z0-9]/g, '_')}.pdf`);
+        }
+        if (attachment.invoicePdf) {
+          const blob = base64ToBlob(attachment.invoicePdf, 'application/pdf');
+          formData.append(`Rechnung_${index + 1}`, blob, `Rechnung_${attachment.regattaName?.replace(/[^a-zA-Z0-9]/g, '_')}.pdf`);
+        }
+      });
+      
+      // An FormSubmit.co senden
+      const response = await fetch('https://formsubmit.co/ajax/kolja.schumann@aitema.de', {
+        method: 'POST',
+        body: formData,
+        headers: {
+          'Accept': 'application/json'
+        }
+      });
+      
+      const result = await response.json();
+      
+      if (result.success) {
+        setSuccess('✅ Antrag erfolgreich eingereicht! Du erhältst eine Bestätigung per E-Mail.');
+        // Optional: Daten zurücksetzen
+      } else {
+        throw new Error(result.message || 'Einreichung fehlgeschlagen');
+      }
+      
+    } catch (err) {
+      console.error('Submit Error:', err);
+      // Fallback auf mailto
+      setError('Online-Einreichung fehlgeschlagen. Versuche Mail-Variante...');
+      setTimeout(() => submitViaEmail(), 1000);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  // === ANTRAG PER MAIL (Fallback) ===
+  const submitViaEmail = () => {
+    try {
+      // Erst alle Dokumente herunterladen
+      downloadAllDocuments();
       
       // Mail-Body erstellen
       const mailTo = 'kolja.schumann@aitema.de';
       const subject = encodeURIComponent(`TSC Startgeld-Erstattung: ${boatData.seglername} - ${totalAmount.toFixed(2)} €`);
       
-      const regattaList = regatten.map((r, i) => 
-        `${i+1}. ${r.regattaName || 'Regatta'}: ${r.invoiceAmount?.toFixed(2) || '0,00'} € (Platz ${r.placement || '?'} von ${r.totalParticipants || '?'})`
-      ).join('\n');
+      const regattaList = regatten.map((r, i) => {
+        let line = `${i+1}. ${r.regattaName || 'Regatta'}: ${r.invoiceAmount?.toFixed(2) || '0,00'} € (Platz ${r.placement || '?'} von ${r.totalParticipants || '?'})`;
+        if (r.crew && r.crew.length > 0) {
+          const crewList = r.crew.map(c => `${c.name}${c.verein ? ` (${c.verein})` : ''}`).join(', ');
+          line += `\n   Crew: ${crewList}`;
+        }
+        return line;
+      }).join('\n');
       
       const body = encodeURIComponent(
 `Sehr geehrte Damen und Herren,
@@ -1014,8 +1317,10 @@ ${regattaList}
 
 GESAMTBETRAG: ${totalAmount.toFixed(2)} €
 
-Die Ergebnislisten und Rechnungen als PDF sind diesem Antrag beigefügt.
-Der PDF-Antrag und der CSV-Buchungssatz wurden soeben heruntergeladen - bitte als Anhang hinzufügen.
+BITTE DIE HERUNTERGELADENEN DATEIEN ALS ANHANG HINZUFÜGEN:
+- TSC_Erstattungsantrag_*.pdf (Gesamtantrag)
+- TSC_Buchungssatz_*.csv (für Buchhaltung)
+- Alle Ergebnis_*.pdf und Rechnung_*.pdf Dateien
 
 Mit freundlichen Grüßen
 ${boatData.seglername || 'Antragsteller'}
@@ -1027,11 +1332,11 @@ Erstellt mit TSC Startgeld-Erstattung App
       // Mail-Client öffnen
       window.location.href = `mailto:${mailTo}?subject=${subject}&body=${body}`;
       
-      setSuccess('Mail-Programm geöffnet - bitte PDFs und CSVs anhängen!');
+      setSuccess('Mail-Programm geöffnet - bitte die heruntergeladenen Dateien anhängen!');
       
     } catch (err) {
-      console.error('Submit Error:', err);
-      setError('Fehler beim Einreichen: ' + err.message);
+      console.error('Email Error:', err);
+      setError('Fehler: ' + err.message);
     }
   };
 
@@ -1272,6 +1577,73 @@ Erstellt mit TSC Startgeld-Erstattung App
               </button>
             </GlassCard>
             
+            {/* Crew-Eingabe für Mehrpersonenboote */}
+            {pdfResult && maxCrew > 1 && (
+              <GlassCard>
+                <div className="flex items-center gap-3 mb-6">
+                  <IconBadge color="cyan">👥</IconBadge>
+                  <div>
+                    <h2 className="text-xl font-semibold text-white">Crew ({currentBoatClass})</h2>
+                    <p className="text-sm text-slate-400">
+                      {minCrew === maxCrew 
+                        ? `${maxCrew} Personen erforderlich` 
+                        : `${minCrew}-${maxCrew} Personen (mindestens ${minCrew})`}
+                    </p>
+                  </div>
+                </div>
+                
+                <div className="space-y-3">
+                  {crewMembers.map((member, index) => (
+                    <div key={index} className="flex items-center gap-3">
+                      <span className="w-8 h-8 rounded-full bg-violet-500/20 text-violet-400 flex items-center justify-center text-sm font-medium">
+                        {index + 1}
+                      </span>
+                      <div className="flex-1 grid grid-cols-2 gap-3">
+                        <input
+                          type="text"
+                          value={member.name}
+                          onChange={(e) => updateCrewMember(index, 'name', e.target.value)}
+                          placeholder={index === 0 ? 'Steuermann/Skipper' : `Crew ${index + 1}`}
+                          className="px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white placeholder-slate-500 focus:outline-none focus:border-violet-500/50 text-sm"
+                        />
+                        <input
+                          type="text"
+                          value={member.verein}
+                          onChange={(e) => updateCrewMember(index, 'verein', e.target.value)}
+                          placeholder="Verein (z.B. TSC)"
+                          className="px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white placeholder-slate-500 focus:outline-none focus:border-violet-500/50 text-sm"
+                        />
+                      </div>
+                      {crewMembers.length > minCrew && (
+                        <button
+                          onClick={() => removeCrewMember(index)}
+                          className="w-8 h-8 rounded-lg bg-red-500/20 text-red-400 hover:bg-red-500/30 flex items-center justify-center"
+                          title="Entfernen"
+                        >
+                          ✕
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                
+                {crewMembers.length < maxCrew && (
+                  <button
+                    onClick={addCrewMember}
+                    className="mt-4 w-full py-2 rounded-lg border border-dashed border-white/20 text-slate-400 hover:text-white hover:border-white/40 transition-all text-sm"
+                  >
+                    + Crewmitglied hinzufügen ({crewMembers.length}/{maxCrew})
+                  </button>
+                )}
+                
+                {crewMembers.filter(m => m.name.trim()).length < minCrew && (
+                  <div className="mt-3 p-2 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-300 text-xs">
+                    ⚠️ Noch {minCrew - crewMembers.filter(m => m.name.trim()).length} Crewmitglied(er) erforderlich
+                  </div>
+                )}
+              </GlassCard>
+            )}
+            
             {/* Rechnung Upload */}
             <GlassCard>
               <div className="flex items-center gap-3 mb-6">
@@ -1351,6 +1723,41 @@ Erstellt mit TSC Startgeld-Erstattung App
                     />
                   </div>
                   <div>
+                    <label className="block text-sm text-slate-400 mb-2">Bootsklasse</label>
+                    <select
+                      value={manualData.boatClass || boatData.bootsklasse}
+                      onChange={(e) => {
+                        setManualData(prev => ({ ...prev, boatClass: e.target.value }));
+                        // Crew zurücksetzen bei Klassenwechsel
+                        const newMaxCrew = getMaxCrewCount(e.target.value);
+                        const newMinCrew = getMinCrewCount(e.target.value);
+                        if (newMaxCrew > 1) {
+                          const initialCrew = [{ name: boatData.seglername || '', verein: 'TSC' }];
+                          for (let i = 1; i < newMinCrew; i++) {
+                            initialCrew.push({ name: '', verein: '' });
+                          }
+                          setCrewMembers(initialCrew);
+                        } else {
+                          setCrewMembers([]);
+                        }
+                      }}
+                      className="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 text-white focus:outline-none focus:border-violet-500/50 appearance-none cursor-pointer"
+                    >
+                      {Object.keys(BOAT_CLASSES).map(k => (
+                        <option key={k} value={k} className="bg-slate-800">{k} ({BOAT_CLASSES[k].crew} Pers.)</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm text-slate-400 mb-2">Datum</label>
+                    <input
+                      type="date"
+                      value={manualData.date}
+                      onChange={(e) => setManualData(prev => ({ ...prev, date: e.target.value }))}
+                      className="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 text-white focus:outline-none focus:border-violet-500/50"
+                    />
+                  </div>
+                  <div>
                     <label className="block text-sm text-slate-400 mb-2">Platzierung *</label>
                     <input
                       type="number"
@@ -1368,15 +1775,6 @@ Erstellt mit TSC Startgeld-Erstattung App
                       onChange={(e) => setManualData(prev => ({ ...prev, totalParticipants: e.target.value }))}
                       placeholder="42"
                       className="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 text-white placeholder-slate-500 focus:outline-none focus:border-violet-500/50"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm text-slate-400 mb-2">Datum</label>
-                    <input
-                      type="date"
-                      value={manualData.date}
-                      onChange={(e) => setManualData(prev => ({ ...prev, date: e.target.value }))}
-                      className="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 text-white focus:outline-none focus:border-violet-500/50"
                     />
                   </div>
                   <div>
@@ -1400,6 +1798,54 @@ Erstellt mit TSC Startgeld-Erstattung App
                     />
                   </div>
                 </div>
+                
+                {/* Crew-Eingabe für Mehrpersonenboote (auch im manuellen Modus) */}
+                {getMaxCrewCount(manualData.boatClass || boatData.bootsklasse) > 1 && (
+                  <div className="mt-6 p-4 rounded-xl bg-white/5 border border-white/10">
+                    <div className="flex items-center gap-2 mb-4">
+                      <span className="text-lg">👥</span>
+                      <div>
+                        <div className="text-white font-medium">Crew ({manualData.boatClass || boatData.bootsklasse})</div>
+                        <div className="text-xs text-slate-400">
+                          {getMinCrewCount(manualData.boatClass || boatData.bootsklasse) === getMaxCrewCount(manualData.boatClass || boatData.bootsklasse) 
+                            ? `${getMaxCrewCount(manualData.boatClass || boatData.bootsklasse)} Personen erforderlich` 
+                            : `${getMinCrewCount(manualData.boatClass || boatData.bootsklasse)}-${getMaxCrewCount(manualData.boatClass || boatData.bootsklasse)} Personen`}
+                        </div>
+                      </div>
+                    </div>
+                    
+                    <div className="space-y-2">
+                      {crewMembers.map((member, index) => (
+                        <div key={index} className="flex items-center gap-2">
+                          <span className="w-6 h-6 rounded-full bg-violet-500/20 text-violet-400 flex items-center justify-center text-xs">{index + 1}</span>
+                          <input
+                            type="text"
+                            value={member.name}
+                            onChange={(e) => updateCrewMember(index, 'name', e.target.value)}
+                            placeholder={index === 0 ? 'Steuermann/Skipper' : `Crew ${index + 1}`}
+                            className="flex-1 px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white placeholder-slate-500 focus:outline-none focus:border-violet-500/50 text-sm"
+                          />
+                          <input
+                            type="text"
+                            value={member.verein}
+                            onChange={(e) => updateCrewMember(index, 'verein', e.target.value)}
+                            placeholder="Verein"
+                            className="w-24 px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white placeholder-slate-500 focus:outline-none focus:border-violet-500/50 text-sm"
+                          />
+                          {crewMembers.length > getMinCrewCount(manualData.boatClass || boatData.bootsklasse) && (
+                            <button onClick={() => removeCrewMember(index)} className="text-red-400 hover:text-red-300">✕</button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                    
+                    {crewMembers.length < getMaxCrewCount(manualData.boatClass || boatData.bootsklasse) && (
+                      <button onClick={addCrewMember} className="mt-3 text-sm text-slate-400 hover:text-white">
+                        + Crewmitglied hinzufügen ({crewMembers.length}/{getMaxCrewCount(manualData.boatClass || boatData.bootsklasse)})
+                      </button>
+                    )}
+                  </div>
+                )}
                 
                 <button
                   onClick={addRegattaManual}
@@ -1453,20 +1899,30 @@ Erstellt mit TSC Startgeld-Erstattung App
                 {regatten.map((regatta) => (
                   <div key={regatta.id} className="p-4 rounded-xl bg-white/5 border border-white/10">
                     <div className="flex items-center justify-between">
-                      <div>
+                      <div className="flex-1">
                         <div className="text-white font-medium">{regatta.regattaName}</div>
                         <div className="text-sm text-slate-400">
+                          {regatta.boatClass && `${regatta.boatClass} • `}
                           {regatta.date && new Date(regatta.date).toLocaleDateString('de-DE')}
                           {regatta.placement && ` • Platz ${regatta.placement}`}
                           {regatta.totalParticipants && ` von ${regatta.totalParticipants}`}
                         </div>
+                        {/* Crew anzeigen */}
+                        {regatta.crew && regatta.crew.length > 0 && (
+                          <div className="text-xs text-cyan-400 mt-1">
+                            👥 {regatta.crew.map(c => `${c.name}${c.verein ? ` (${c.verein})` : ''}`).join(', ')}
+                          </div>
+                        )}
                       </div>
                       <div className="flex items-center gap-3">
                         <span className="text-lg font-semibold text-emerald-400">
                           {regatta.invoiceAmount?.toFixed(2).replace('.', ',')} €
                         </span>
                         <button
-                          onClick={() => setRegatten(prev => prev.filter(r => r.id !== regatta.id))}
+                          onClick={() => {
+                            setRegatten(prev => prev.filter(r => r.id !== regatta.id));
+                            setPdfAttachments(prev => prev.filter(a => a.regattaId !== regatta.id));
+                          }}
                           className="w-8 h-8 rounded-lg bg-red-500/20 text-red-400 hover:bg-red-500/30 flex items-center justify-center"
                         >
                           ✕
@@ -1523,6 +1979,13 @@ Erstellt mit TSC Startgeld-Erstattung App
                 </div>
               )}
               
+              {/* PDF-Anhänge Status */}
+              {pdfAttachments.length > 0 && (
+                <div className="p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-sm mb-6">
+                  ✅ {pdfAttachments.length} Regatta(en) mit PDF-Anhängen bereit ({pdfAttachments.filter(a => a.resultPdf).length} Ergebnislisten, {pdfAttachments.filter(a => a.invoicePdf).length} Rechnungen)
+                </div>
+              )}
+              
               <div className="flex items-center justify-between p-4 rounded-xl bg-gradient-to-r from-violet-500/20 to-cyan-500/20 border border-violet-500/30">
                 <div className="text-white font-semibold">Gesamtbetrag zur Erstattung</div>
                 <div className="text-2xl font-bold text-white">{totalAmount.toFixed(2).replace('.', ',')} €</div>
@@ -1530,13 +1993,13 @@ Erstellt mit TSC Startgeld-Erstattung App
             </GlassCard>
             
             {/* Export-Buttons */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <GlassCard className="cursor-pointer hover:border-violet-500/30 transition-all" onClick={generatePDF}>
                 <div className="flex items-center gap-4">
                   <div className="w-12 h-12 rounded-xl bg-red-500/20 flex items-center justify-center text-2xl">📄</div>
                   <div>
                     <div className="text-white font-semibold">PDF-Antrag</div>
-                    <div className="text-sm text-slate-400">Gesamtantrag mit Übersicht</div>
+                    <div className="text-sm text-slate-400">Gesamtantrag</div>
                   </div>
                 </div>
               </GlassCard>
@@ -1545,34 +2008,57 @@ Erstellt mit TSC Startgeld-Erstattung App
                 <div className="flex items-center gap-4">
                   <div className="w-12 h-12 rounded-xl bg-emerald-500/20 flex items-center justify-center text-2xl">📊</div>
                   <div>
-                    <div className="text-white font-semibold">CSV-Buchungssatz</div>
-                    <div className="text-sm text-slate-400">Für Buchhaltung & SEPA</div>
+                    <div className="text-white font-semibold">CSV</div>
+                    <div className="text-sm text-slate-400">Buchungssatz</div>
+                  </div>
+                </div>
+              </GlassCard>
+              
+              <GlassCard className="cursor-pointer hover:border-violet-500/30 transition-all" onClick={downloadAllDocuments}>
+                <div className="flex items-center gap-4">
+                  <div className="w-12 h-12 rounded-xl bg-cyan-500/20 flex items-center justify-center text-2xl">📦</div>
+                  <div>
+                    <div className="text-white font-semibold">Alle Dateien</div>
+                    <div className="text-sm text-slate-400">Inkl. PDFs</div>
                   </div>
                 </div>
               </GlassCard>
             </div>
             
-            {/* Einreichen-Button */}
+            {/* ONLINE EINREICHEN */}
             <GlassCard className="border-2 border-emerald-500/30 bg-emerald-500/5">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-4">
-                  <div className="w-14 h-14 rounded-xl bg-emerald-500/20 flex items-center justify-center text-3xl">📧</div>
-                  <div>
-                    <div className="text-white font-semibold text-lg">Antrag einreichen</div>
-                    <div className="text-sm text-slate-400">PDF + CSV erstellen und per Mail an den TSC senden</div>
-                    <div className="text-xs text-emerald-400 mt-1">Empfänger: kolja.schumann@aitema.de</div>
-                  </div>
+              <div className="flex items-center gap-4 mb-4">
+                <div className="w-14 h-14 rounded-xl bg-emerald-500/20 flex items-center justify-center text-3xl">🚀</div>
+                <div>
+                  <div className="text-white font-semibold text-lg">Online einreichen</div>
+                  <div className="text-sm text-slate-400">Antrag direkt an den TSC senden - alle Dateien werden automatisch angehängt!</div>
                 </div>
+              </div>
+              
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <button
-                  onClick={submitApplication}
-                  disabled={regatten.length === 0}
-                  className="px-6 py-3 rounded-xl bg-gradient-to-r from-emerald-600 to-emerald-500 text-white font-medium hover:from-emerald-500 hover:to-emerald-400 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                  onClick={submitOnline}
+                  disabled={regatten.length === 0 || isSubmitting}
+                  className="py-4 rounded-xl bg-gradient-to-r from-emerald-600 to-emerald-500 text-white font-medium hover:from-emerald-500 hover:to-emerald-400 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                 >
-                  Jetzt einreichen →
+                  {isSubmitting ? (
+                    <>⏳ Wird gesendet...</>
+                  ) : (
+                    <>📧 Jetzt online einreichen</>
+                  )}
+                </button>
+                
+                <button
+                  onClick={submitViaEmail}
+                  disabled={regatten.length === 0}
+                  className="py-4 rounded-xl bg-white/10 border border-white/20 text-white font-medium hover:bg-white/20 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                >
+                  ✉️ Per E-Mail senden (manuell)
                 </button>
               </div>
-              <div className="mt-4 p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-300 text-sm">
-                💡 Die PDF- und CSV-Dateien werden heruntergeladen. Bitte füge sie als Anhang zur Mail hinzu, zusammen mit den Original-Rechnungen und Ergebnislisten.
+              
+              <div className="mt-4 p-3 rounded-lg bg-violet-500/10 border border-violet-500/20 text-violet-300 text-sm">
+                💡 <strong>Online einreichen</strong> sendet alles automatisch. <strong>Per E-Mail</strong> öffnet dein Mail-Programm - du musst die heruntergeladenen Dateien dann selbst anhängen.
               </div>
             </GlassCard>
           </div>
