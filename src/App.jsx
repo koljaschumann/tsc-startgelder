@@ -170,6 +170,7 @@ function App() {
   // Manuelle Korrektur State
   const [manualPlacement, setManualPlacement] = useState('');
   const [manualTotalParticipants, setManualTotalParticipants] = useState('');
+  const [manualRegattaName, setManualRegattaName] = useState('');
   
   // Manuelle Eingabe State
   const [manualData, setManualData] = useState({
@@ -625,56 +626,74 @@ function App() {
 
   // === REGATTA HINZUFÜGEN (mit manueller Korrektur) ===
   const addRegattaFromPdf = () => {
-    if (!pdfResult) {
-      setError('Bitte zuerst eine Ergebnisliste hochladen');
-      return;
+    try {
+      if (!pdfResult) {
+        setError('Bitte zuerst eine Ergebnisliste hochladen');
+        return;
+      }
+      
+      if (!currentInvoiceAmount) {
+        setError('Bitte lade eine Rechnung hoch und gib den Betrag ein');
+        return;
+      }
+      
+      const amount = parseFloat(currentInvoiceAmount.replace(',', '.'));
+      if (isNaN(amount) || amount <= 0) {
+        setError('Bitte einen gültigen Rechnungsbetrag eingeben');
+        return;
+      }
+      
+      // Platzierung: Manuell eingegeben oder aus PDF
+      const placement = manualPlacement ? parseInt(manualPlacement) : pdfResult.participant?.rank;
+      const totalParticipants = manualTotalParticipants ? parseInt(manualTotalParticipants) : pdfResult.totalParticipants;
+      const regattaName = manualRegattaName.trim() || pdfResult.regattaName || '';
+      
+      if (!placement) {
+        setError('Bitte Platzierung eingeben (wurde nicht automatisch erkannt)');
+        return;
+      }
+      
+      if (!regattaName) {
+        setError('Bitte Regattanamen eingeben');
+        return;
+      }
+      
+      const newRegatta = {
+        id: Date.now(),
+        regattaName: regattaName,
+        boatClass: pdfResult.boatClass || boatData.bootsklasse,
+        date: pdfResult.date || '',
+        placement: placement,
+        totalParticipants: totalParticipants || 0,
+        raceCount: pdfResult.raceCount || 0,
+        sailorName: pdfResult.participant?.name || boatData.seglername,
+        resultPdfData: currentPdfData || null,
+        invoicePdfData: currentInvoiceData || null,
+        invoiceAmount: amount,
+        addedAt: new Date().toISOString()
+      };
+      
+      console.log('Adding regatta:', newRegatta);
+      
+      setRegatten(prev => [...prev, newRegatta]);
+      
+      // Reset alle States
+      setPdfResult(null);
+      setCurrentPdfData(null);
+      setCurrentInvoiceData(null);
+      setCurrentInvoiceAmount('');
+      setManualPlacement('');
+      setManualTotalParticipants('');
+      setManualRegattaName('');
+      setDebugText('');
+      
+      setSuccess(`"${regattaName}" wurde hinzugefügt! (${amount.toFixed(2).replace('.', ',')} €)`);
+      setActiveTab('list');
+      
+    } catch (err) {
+      console.error('Error adding regatta:', err);
+      setError('Fehler beim Hinzufügen: ' + err.message);
     }
-    
-    if (!currentInvoiceAmount) {
-      setError('Bitte lade eine Rechnung hoch und gib den Betrag ein');
-      return;
-    }
-    
-    const amount = parseFloat(currentInvoiceAmount.replace(',', '.'));
-    if (isNaN(amount) || amount <= 0) {
-      setError('Bitte einen gültigen Rechnungsbetrag eingeben');
-      return;
-    }
-    
-    // Platzierung: Manuell eingegeben oder aus PDF
-    const placement = manualPlacement ? parseInt(manualPlacement) : pdfResult.participant?.rank;
-    const totalParticipants = manualTotalParticipants ? parseInt(manualTotalParticipants) : pdfResult.totalParticipants;
-    
-    if (!placement) {
-      setError('Bitte Platzierung eingeben (wurde nicht automatisch erkannt)');
-      return;
-    }
-    
-    const newRegatta = {
-      id: Date.now(),
-      regattaName: pdfResult.regattaName || 'Regatta',
-      boatClass: pdfResult.boatClass || boatData.bootsklasse,
-      date: pdfResult.date,
-      placement: placement,
-      totalParticipants: totalParticipants || 0,
-      raceCount: pdfResult.raceCount || 0,
-      sailorName: pdfResult.participant?.name || boatData.seglername,
-      resultPdfData: currentPdfData,
-      invoicePdfData: currentInvoiceData,
-      invoiceAmount: amount,
-      addedAt: new Date().toISOString()
-    };
-    
-    setRegatten(prev => [...prev, newRegatta]);
-    setPdfResult(null);
-    setCurrentPdfData(null);
-    setCurrentInvoiceData(null);
-    setCurrentInvoiceAmount('');
-    setManualPlacement('');
-    setManualTotalParticipants('');
-    setDebugText('');
-    setSuccess(`"${newRegatta.regattaName}" wurde hinzugefügt! (${amount.toFixed(2).replace('.', ',')} €)`);
-    setActiveTab('list');
   };
 
   const addRegattaManual = () => {
@@ -979,8 +998,22 @@ function App() {
               {pdfResult && (
                 <div className="mt-4 p-4 rounded-xl bg-white/5 border border-white/10">
                   <div className="text-sm text-slate-400 mb-3">
-                    {pdfResult.participant ? '✏️ Platzierung korrigieren (falls nötig):' : '⚠️ Platzierung manuell eingeben:'}
+                    ✏️ Daten korrigieren (falls nötig):
                   </div>
+                  
+                  {/* Regattaname */}
+                  <div className="mb-4">
+                    <label className="block text-xs text-slate-500 mb-1">Regattaname *</label>
+                    <input
+                      type="text"
+                      value={manualRegattaName || pdfResult.regattaName || ''}
+                      onChange={(e) => setManualRegattaName(e.target.value)}
+                      placeholder="z.B. Gorch-Fock-Preis 2025"
+                      className="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white placeholder-slate-500 focus:outline-none focus:border-violet-500/50 text-sm"
+                    />
+                  </div>
+                  
+                  {/* Platzierung und Teilnehmer */}
                   <div className="grid grid-cols-2 gap-4">
                     <div>
                       <label className="block text-xs text-slate-500 mb-1">Platzierung *</label>
@@ -1156,7 +1189,11 @@ function App() {
             {!manualMode && pdfResult && (
               <button
                 onClick={addRegattaFromPdf}
-                disabled={!currentInvoiceAmount || (!pdfResult.participant && !manualPlacement)}
+                disabled={
+                  !currentInvoiceAmount || 
+                  (!pdfResult.participant?.rank && !manualPlacement) ||
+                  (!pdfResult.regattaName && !manualRegattaName.trim())
+                }
                 className="w-full py-4 rounded-xl bg-gradient-to-r from-emerald-600 to-emerald-500 text-white font-medium hover:from-emerald-500 hover:to-emerald-400 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 ✓ Regatta zur Liste hinzufügen
