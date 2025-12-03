@@ -33,6 +33,7 @@ function App() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
+  const [isDragging, setIsDragging] = useState(false);
   
   // PDF Upload State
   const [pdfResult, setPdfResult] = useState(null);
@@ -74,8 +75,7 @@ function App() {
   }, [error]);
 
   // Handle PDF Upload - Parse im Browser mit pdf.js
-  const handlePdfUpload = async (event) => {
-    const file = event.target.files?.[0];
+  const processPdfFile = async (file) => {
     if (!file) return;
     
     if (!file.name.toLowerCase().endsWith('.pdf')) {
@@ -106,7 +106,8 @@ function App() {
         fullText += pageText + '\n';
       }
       
-      console.log('Extracted text:', fullText.substring(0, 1000));
+      console.log('Extracted text length:', fullText.length);
+      console.log('First 1500 chars:', fullText.substring(0, 1500));
       
       // Parse the text
       const result = parseRegattaPDF(fullText, boatData.segelnummer);
@@ -140,8 +141,35 @@ function App() {
       setError(err.message);
     } finally {
       setIsProcessing(false);
-      event.target.value = '';
     }
+  };
+
+  const handlePdfUpload = async (event) => {
+    const file = event.target.files?.[0];
+    await processPdfFile(file);
+    event.target.value = ''; // Reset file input
+  };
+
+  // Drag & Drop handlers
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+  };
+
+  const handleDrop = async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+    
+    const file = e.dataTransfer.files?.[0];
+    await processPdfFile(file);
   };
 
   // PDF Text Parser (im Browser) - Unterstützt verschiedene Formate
@@ -155,63 +183,57 @@ function App() {
       totalParticipants: 0,
       participant: null,
       allResults: [],
-      rawText: text.substring(0, 500) // Debug: Ersten 500 Zeichen speichern
+      rawText: text.substring(0, 500)
     };
 
     try {
-      console.log('Parsing text, length:', text.length);
-      console.log('First 1000 chars:', text.substring(0, 1000));
+      console.log('=== PDF PARSING START ===');
+      console.log('Text length:', text.length);
       
       // === REGATTA-NAME FINDEN ===
-      // Methode 1: Nach "manage2sail.com REGATTA Overall Results" suchen
-      let regattaMatch = text.match(/manage2sail\.com\s+([A-Za-zäöüÄÖÜß0-9\-\s]+?)\s+Overall Results/i);
-      if (regattaMatch) {
-        result.regattaName = regattaMatch[1].trim();
-      }
+      // Methode 1: Bekannte Muster suchen (Preis, Pokal, Cup, etc.)
+      const namePatterns = [
+        /([A-Za-zäöüÄÖÜß\-]+(?:[\s\-][A-Za-zäöüÄÖÜß\-]+)*[\s\-]*(?:Preis|Pokal|Cup|Trophy|Meisterschaft|Regatta|Festival|Open|Week)[\s\-]*\d{4})/i,
+        /([A-Za-zäöüÄÖÜß\-]+(?:[\s\-][A-Za-zäöüÄÖÜß\-]+)*[\s\-]*\d{4}[\s\-]*-[\s\-]*Opti[mist]*\s*[ABC]?)/i,
+      ];
       
-      // Methode 2: Suche nach typischen Regatta-Namen (Preis, Pokal, Cup, etc.)
-      if (!result.regattaName) {
-        const namePatterns = [
-          /([A-Za-zäöüÄÖÜß\-]+(?:\s+[A-Za-zäöüÄÖÜß\-]+)*\s*(?:Preis|Pokal|Cup|Trophy|Meisterschaft|Regatta|Festival|Open|Week)(?:\s+\d{4})?)/i,
-          /([A-Za-zäöüÄÖÜß\-]+(?:\s+[A-Za-zäöüÄÖÜß\-]+)*\s+\d{4}\s*-\s*Opti\s*[ABC]?)/i,
-        ];
-        for (const pattern of namePatterns) {
-          const match = text.match(pattern);
-          if (match) {
-            result.regattaName = match[1].trim();
-            break;
-          }
+      for (const pattern of namePatterns) {
+        const match = text.match(pattern);
+        if (match) {
+          result.regattaName = match[1].trim().replace(/\s+/g, ' ');
+          console.log('Found regatta name via pattern:', result.regattaName);
+          break;
         }
       }
       
-      // Methode 3: Erste lange Textzeile die kein Header ist
+      // Methode 2: Nach manage2sail.com suchen
       if (!result.regattaName) {
-        const lines = text.split(/[\n\r]+/).map(l => l.trim()).filter(l => l.length > 5);
-        for (const line of lines.slice(0, 10)) {
-          if (!line.match(/manage2sail|Ergebnisse|Results|Page|Powered|Report|Segel|Nr\s|Rk\s|Verein/i) &&
-              line.length > 10 && line.length < 80) {
-            result.regattaName = line;
-            break;
-          }
+        const m2sMatch = text.match(/manage2sail\.com\s+([^\n]+?)(?:\s+Overall|\s+Ergebnisse)/i);
+        if (m2sMatch) {
+          result.regattaName = m2sMatch[1].trim();
+          console.log('Found regatta name via m2s:', result.regattaName);
         }
       }
       
       // === BOOTSKLASSE ===
       const classPatterns = [
-        'Optimist A', 'Optimist B', 'Optimist C', 'Opti A', 'Opti B', 'Opti C',
-        'Optimist', '420er', '420', 'Laser', 'ILCA 4', 'ILCA 6', 'ILCA 7', 
-        '29er', 'Europe', 'Pirat', 'Cadet', 'O\'pen Skiff'
+        /Opti(?:mist)?\s*B/i, /Opti(?:mist)?\s*A/i, /Opti(?:mist)?\s*C/i, 
+        /Optimist/i, /420er/i, /420/i, /Laser/i, 
+        /ILCA\s*4/i, /ILCA\s*6/i, /ILCA\s*7/i,
+        /29er/i, /Europe/i, /Pirat/i, /Cadet/i
       ];
       for (const pattern of classPatterns) {
-        if (text.toLowerCase().includes(pattern.toLowerCase())) {
-          result.boatClass = pattern;
+        const match = text.match(pattern);
+        if (match) {
+          result.boatClass = match[0].replace(/\s+/g, ' ').trim();
+          console.log('Found boat class:', result.boatClass);
           break;
         }
       }
       
       // === DATUM ===
       // Format 1: "27 APR 2025"
-      let dateMatch = text.match(/(\d{1,2})\s*(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\s*(\d{4})/i);
+      let dateMatch = text.match(/(\d{1,2})[\.\s]*(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)[\.\s]*(\d{4})/i);
       if (dateMatch) {
         result.date = `${dateMatch[1]} ${dateMatch[2].toUpperCase()} ${dateMatch[3]}`;
       }
@@ -223,107 +245,93 @@ function App() {
           result.date = `${dateMatch[1]} ${months[parseInt(dateMatch[2])]} ${dateMatch[3]}`;
         }
       }
+      console.log('Found date:', result.date);
       
       // === WETTFAHRTEN ===
       const raceMatches = text.match(/\bR(\d+)\b/g);
       if (raceMatches) {
-        const raceNumbers = raceMatches.map(r => parseInt(r.replace('R', ''))).filter(n => !isNaN(n) && n < 20);
+        const raceNumbers = raceMatches.map(r => parseInt(r.replace('R', ''))).filter(n => !isNaN(n) && n > 0 && n < 20);
         if (raceNumbers.length > 0) {
           result.raceCount = Math.max(...raceNumbers);
         }
       }
+      console.log('Found race count:', result.raceCount);
       
       // === TEILNEHMER PARSEN ===
       const normalizeSN = (sn) => sn.replace(/[\s\-\.]+/g, '').toUpperCase();
       const userSNNorm = normalizeSN(sailNumber || '');
       const userSNNumbers = (sailNumber || '').replace(/\D/g, '');
       
-      console.log('Looking for sail number:', sailNumber, '-> normalized:', userSNNorm, '-> numbers:', userSNNumbers);
+      console.log('Looking for sail number:', sailNumber, '-> numbers only:', userSNNumbers);
       
-      // Verschiedene Patterns für verschiedene PDF-Formate
-      const patterns = [
-        // Format 1: "5 GER 13162 Moritz SCHUMANN TSC" (englisches Format)
-        /\b(\d{1,3})\s+GER\s*(\d{3,5})\s+([A-Za-zÄÖÜäöüß][A-Za-zÄÖÜäöüß\s\-]+?)(?:\s+[A-Z]{2,10}\s+|\s+\d)/g,
-        // Format 2: "1 GER 13097 Mia PERABO TSC 14.0" (deutsches Format mit Punkten)
-        /\b(\d{1,3})\s+GER\s*(\d{3,5})\s+([A-Za-zÄÖÜäöüß][A-Za-zÄÖÜäöüß\s\-\.]+?)\s+[A-Z]{2,10}\s+\d+\.\d/g,
-      ];
+      // Finde alle GER + Nummer Kombinationen
+      const allGerNumbers = [];
+      const gerPattern = /GER\s*(\d{3,5})/gi;
+      let gerMatch;
+      while ((gerMatch = gerPattern.exec(text)) !== null) {
+        const num = gerMatch[1];
+        if (!allGerNumbers.includes(num)) {
+          allGerNumbers.push(num);
+        }
+      }
+      console.log('Found GER numbers:', allGerNumbers.length, allGerNumbers.slice(0, 10));
       
-      const seenRanks = new Set();
+      // Für jede Segelnummer, finde den Rang
+      const seenSailNumbers = new Set();
       let maxRank = 0;
       
-      // Versuche alle Patterns
-      for (const pattern of patterns) {
-        let match;
-        pattern.lastIndex = 0; // Reset regex
+      for (const sailNumDigits of allGerNumbers) {
+        if (seenSailNumbers.has(sailNumDigits)) continue;
+        seenSailNumbers.add(sailNumDigits);
         
-        while ((match = pattern.exec(text)) !== null) {
-          const rank = parseInt(match[1]);
-          const sailNumDigits = match[2];
-          const sailNum = 'GER ' + sailNumDigits;
-          const name = match[3].trim().replace(/\s+/g, ' ');
-          
-          if (rank > 0 && rank < 200 && !seenRanks.has(rank)) {
-            seenRanks.add(rank);
-            if (rank > maxRank) maxRank = rank;
-            
-            const entry = {
-              rank,
-              sailNumber: sailNum,
-              name: name.substring(0, 40),
-              club: '',
-              totalPoints: 0,
-              netPoints: 0
-            };
-            
-            result.allResults.push(entry);
-            
-            // Prüfe ob dies der gesuchte Teilnehmer ist
-            if (userSNNumbers && (
-                sailNumDigits === userSNNumbers ||
-                normalizeSN(sailNum) === userSNNorm ||
-                sailNumDigits.includes(userSNNumbers) ||
-                userSNNumbers.includes(sailNumDigits)
-            )) {
-              console.log('MATCH FOUND:', sailNum, 'rank:', rank, 'name:', name);
-              result.participant = entry;
-            }
-          }
+        // Suche nach einem Rang vor dieser Segelnummer
+        // Pattern: Nummer (1-3 Ziffern) + Leerzeichen + GER + diese Segelnummer
+        const rankPattern = new RegExp(`(\\d{1,3})\\s+GER\\s*${sailNumDigits}\\b`, 'i');
+        const rankMatch = text.match(rankPattern);
+        
+        let rank = 0;
+        if (rankMatch) {
+          rank = parseInt(rankMatch[1]);
+          if (rank > 200) rank = 0; // Ungültiger Rang
+        }
+        
+        // Fallback: Verwende Position in der Liste
+        if (rank === 0) {
+          rank = result.allResults.length + 1;
+        }
+        
+        if (rank > maxRank) maxRank = rank;
+        
+        // Versuche den Namen zu finden
+        const namePattern = new RegExp(`GER\\s*${sailNumDigits}\\s+([A-Za-zÄÖÜäöüß][A-Za-zÄÖÜäöüß\\s\\-\\.]+?)(?:\\s+[A-Z]{2,10}\\s|\\s+\\d|$)`, 'i');
+        const nameMatch = text.match(namePattern);
+        const name = nameMatch ? nameMatch[1].trim().substring(0, 40) : `Teilnehmer ${rank}`;
+        
+        const sailNum = 'GER ' + sailNumDigits;
+        const entry = {
+          rank,
+          sailNumber: sailNum,
+          name,
+          club: '',
+          totalPoints: 0,
+          netPoints: 0
+        };
+        
+        result.allResults.push(entry);
+        
+        // Prüfe ob dies der gesuchte Teilnehmer ist
+        if (userSNNumbers && (
+            sailNumDigits === userSNNumbers ||
+            sailNumDigits.endsWith(userSNNumbers) ||
+            userSNNumbers.endsWith(sailNumDigits)
+        )) {
+          console.log('MATCH FOUND:', sailNum, 'rank:', rank, 'name:', name);
+          result.participant = entry;
         }
       }
       
-      // Fallback: Einfacheres Pattern wenn nichts gefunden wurde
-      if (result.allResults.length === 0) {
-        console.log('Trying fallback pattern...');
-        const simplePattern = /GER\s*(\d{3,5})/g;
-        let match;
-        let rank = 0;
-        
-        while ((match = simplePattern.exec(text)) !== null) {
-          rank++;
-          const sailNumDigits = match[1];
-          const sailNum = 'GER ' + sailNumDigits;
-          
-          if (!seenRanks.has(sailNumDigits)) {
-            seenRanks.add(sailNumDigits);
-            
-            const entry = {
-              rank,
-              sailNumber: sailNum,
-              name: 'Teilnehmer ' + rank,
-              club: '',
-              totalPoints: 0,
-              netPoints: 0
-            };
-            
-            result.allResults.push(entry);
-            
-            if (userSNNumbers && sailNumDigits.includes(userSNNumbers)) {
-              result.participant = entry;
-            }
-          }
-        }
-        maxRank = rank;
-      }
+      // Sortiere nach Rang
+      result.allResults.sort((a, b) => a.rank - b.rank);
       
       result.totalParticipants = maxRank || result.allResults.length;
       result.success = result.allResults.length > 0;
@@ -333,19 +341,18 @@ function App() {
         result.regattaName = `Regatta (${result.boatClass})`;
       }
       if (!result.regattaName) {
-        result.regattaName = 'Unbekannte Regatta';
+        result.regattaName = 'Regatta';
       }
       
-      console.log('Parse result:', {
-        success: result.success,
-        regattaName: result.regattaName,
-        boatClass: result.boatClass,
-        date: result.date,
-        raceCount: result.raceCount,
-        totalParticipants: result.totalParticipants,
-        foundParticipant: !!result.participant,
-        allResultsCount: result.allResults.length
-      });
+      console.log('=== PARSE RESULT ===');
+      console.log('Success:', result.success);
+      console.log('Regatta:', result.regattaName);
+      console.log('Class:', result.boatClass);
+      console.log('Date:', result.date);
+      console.log('Races:', result.raceCount);
+      console.log('Participants:', result.totalParticipants);
+      console.log('Found user:', !!result.participant);
+      console.log('All results count:', result.allResults.length);
       
     } catch (error) {
       console.error('Parse error:', error);
@@ -700,14 +707,22 @@ function App() {
               </p>
               
               {/* Upload Area */}
-              <label className={`
-                block border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-all
-                ${isProcessing 
-                  ? 'border-cyan-400 bg-cyan-500/10' 
-                  : 'border-white/30 hover:border-cyan-400 hover:bg-white/5'}
-              `}>
+              <div
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
+                className={`
+                  border-2 border-dashed rounded-xl p-8 text-center transition-all
+                  ${isDragging 
+                    ? 'border-cyan-400 bg-cyan-500/20 scale-105' 
+                    : isProcessing 
+                      ? 'border-cyan-400 bg-cyan-500/10' 
+                      : 'border-white/30 hover:border-cyan-400 hover:bg-white/5'}
+                `}
+              >
                 <input
                   type="file"
+                  id="pdf-upload"
                   accept=".pdf"
                   onChange={handlePdfUpload}
                   disabled={isProcessing}
@@ -718,14 +733,21 @@ function App() {
                     <div className="text-4xl mb-2 animate-pulse">⏳</div>
                     <div>PDF wird verarbeitet...</div>
                   </div>
-                ) : (
-                  <div className="text-blue-200">
-                    <div className="text-4xl mb-2">📤</div>
-                    <div className="font-medium text-white">PDF-Datei auswählen</div>
-                    <div className="text-sm mt-1">oder hierher ziehen</div>
+                ) : isDragging ? (
+                  <div className="text-cyan-300">
+                    <div className="text-4xl mb-2">📥</div>
+                    <div className="font-medium">PDF hier ablegen</div>
                   </div>
+                ) : (
+                  <label htmlFor="pdf-upload" className="cursor-pointer block">
+                    <div className="text-blue-200">
+                      <div className="text-4xl mb-2">📤</div>
+                      <div className="font-medium text-white">PDF-Datei auswählen</div>
+                      <div className="text-sm mt-1">oder hierher ziehen</div>
+                    </div>
+                  </label>
                 )}
-              </label>
+              </div>
               
               {/* How to get PDF */}
               <details className="mt-4 text-sm">
