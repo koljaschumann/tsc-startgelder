@@ -1,8 +1,8 @@
 {
   "name": "tsc-startgelder",
-  "version": "4.0.0",
+  "version": "5.0.0",
   "private": true,
-  "description": "TSC Startgeld-Erstattung - PDF-basiert",
+  "description": "TSC Startgeld-Erstattung - PDF-basiert mit OCR",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -13,6 +13,7 @@
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "pdfjs-dist": "^3.11.174",
+    "tesseract.js": "^5.0.4",
     "jspdf": "^2.5.1",
     "jspdf-autotable": "^3.8.1",
     "@vitejs/plugin-react": "^4.0.0",

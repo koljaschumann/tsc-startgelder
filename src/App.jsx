@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import * as pdfjsLib from 'pdfjs-dist'
 import { jsPDF } from 'jspdf'
 import 'jspdf-autotable'
+import Tesseract from 'tesseract.js'
 
 // PDF.js Worker einrichten - mehrere Optionen probieren
 const setupPdfWorker = () => {
@@ -57,6 +58,7 @@ function App() {
   const [debugText, setDebugText] = useState(''); // Debug: Extrahierter Text
   const [pasteMode, setPasteMode] = useState(false); // Text-Paste Modus
   const [pastedText, setPastedText] = useState(''); // Eingefügter Text
+  const [ocrProgress, setOcrProgress] = useState(null); // OCR Fortschritt
   
   // Manuelle Eingabe State
   const [manualData, setManualData] = useState({
@@ -252,6 +254,57 @@ function App() {
     return result;
   };
 
+  // === OCR FUNKTION ===
+  const performOCR = async (pdf, arrayBuffer) => {
+    console.log('Starting OCR...');
+    setOcrProgress({ status: 'Starte OCR...', percent: 0 });
+    
+    let fullText = '';
+    const totalPages = pdf.numPages;
+    
+    for (let i = 1; i <= totalPages; i++) {
+      try {
+        setOcrProgress({ 
+          status: `Seite ${i}/${totalPages} wird gescannt...`, 
+          percent: Math.round((i - 1) / totalPages * 100) 
+        });
+        
+        const page = await pdf.getPage(i);
+        const viewport = page.getViewport({ scale: 2.0 }); // Höhere Auflösung für bessere OCR
+        
+        // Canvas erstellen und Seite rendern
+        const canvas = document.createElement('canvas');
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+        const ctx = canvas.getContext('2d');
+        
+        await page.render({ canvasContext: ctx, viewport }).promise;
+        
+        // OCR auf Canvas ausführen
+        const { data } = await Tesseract.recognize(canvas, 'deu+eng', {
+          logger: (m) => {
+            if (m.status === 'recognizing text') {
+              setOcrProgress({ 
+                status: `Seite ${i}/${totalPages}: Text wird erkannt...`, 
+                percent: Math.round(((i - 1) + m.progress) / totalPages * 100) 
+              });
+            }
+          }
+        });
+        
+        fullText += data.text + '\n';
+        console.log(`Page ${i} OCR complete, text length: ${data.text.length}`);
+        
+      } catch (pageError) {
+        console.error(`OCR error on page ${i}:`, pageError);
+      }
+    }
+    
+    setOcrProgress(null);
+    console.log('OCR complete, total text length:', fullText.length);
+    return fullText;
+  };
+
   // === PDF VERARBEITUNG ===
   const processPdfFile = async (file) => {
     if (!file) return;
@@ -271,6 +324,7 @@ function App() {
     setError(null);
     setPdfResult(null);
     setDebugText('');
+    setOcrProgress(null);
     
     try {
       const arrayBuffer = await file.arrayBuffer();
@@ -309,6 +363,7 @@ function App() {
       
       let fullText = '';
       
+      // Erste Versuch: Text direkt extrahieren
       for (let i = 1; i <= pdf.numPages; i++) {
         try {
           const page = await pdf.getPage(i);
@@ -316,20 +371,6 @@ function App() {
           
           console.log(`Page ${i}: ${textContent.items.length} text items`);
           
-          // Debug: Zeige erste 10 Items
-          if (i === 1) {
-            console.log('First 10 items:', textContent.items.slice(0, 10).map(item => ({
-              str: item.str,
-              width: item.width,
-              hasFont: !!item.fontName
-            })));
-          }
-          
-          if (textContent.items.length === 0) {
-            console.log(`Page ${i} has no text items - might be image-based`);
-          }
-          
-          // Extrahiere Text - versuche verschiedene Methoden
           for (const item of textContent.items) {
             if (item.str && item.str.trim()) {
               fullText += item.str + ' ';
@@ -342,14 +383,31 @@ function App() {
         }
       }
       
-      console.log('Total extracted text length:', fullText.length);
-      console.log('Extracted text preview:', fullText.substring(0, 500));
-      console.log('Full text (first 1000):', fullText.substring(0, 1000));
+      console.log('Direct extraction text length:', fullText.length);
+      
+      // Wenn kein oder wenig Text extrahiert wurde, nutze OCR
+      if (fullText.trim().length < 100) {
+        console.log('Text extraction failed, switching to OCR...');
+        setDebugText('Direkter Text-Extraktion fehlgeschlagen. Starte OCR...');
+        
+        try {
+          fullText = await performOCR(pdf, arrayBuffer);
+        } catch (ocrError) {
+          console.error('OCR failed:', ocrError);
+          setError('OCR fehlgeschlagen: ' + ocrError.message);
+          setDebugText('OCR Error: ' + ocrError.message);
+          setPasteMode(true);
+          return;
+        }
+      }
+      
+      console.log('Final text length:', fullText.length);
+      console.log('Text preview:', fullText.substring(0, 500));
       
       // Debug: Zeige extrahierten Text
       if (fullText.trim().length < 50) {
-        setDebugText('KEIN TEXT EXTRAHIERT!\n\nDiese PDF enthält keinen extrahierbaren Text.\n\nBitte nutze "Text aus PDF einfügen" - öffne die PDF, markiere alles (Strg+A), kopiere (Strg+C) und füge hier ein.');
-        setError('PDF-Text konnte nicht automatisch gelesen werden. Bitte füge den Text manuell ein.');
+        setDebugText('KEIN TEXT EXTRAHIERT!\n\nWeder direkte Extraktion noch OCR haben funktioniert.\n\nBitte nutze "Text einfügen" oder "Manuell eingeben".');
+        setError('PDF konnte nicht gelesen werden. Bitte nutze manuelle Eingabe.');
         setPasteMode(true);
         return;
       }
@@ -398,6 +456,7 @@ function App() {
       setDebugText('Error: ' + err.message + '\n\nStack: ' + err.stack);
     } finally {
       setIsProcessing(false);
+      setOcrProgress(null);
     }
   };
 
@@ -820,7 +879,21 @@ function App() {
                 {isProcessing ? (
                   <div className="text-cyan-300">
                     <div className="text-4xl mb-2 animate-pulse">⏳</div>
-                    <div>PDF wird verarbeitet...</div>
+                    {ocrProgress ? (
+                      <div>
+                        <div className="font-medium mb-2">🔍 OCR läuft...</div>
+                        <div className="text-sm mb-2">{ocrProgress.status}</div>
+                        <div className="w-full bg-white/20 rounded-full h-2">
+                          <div 
+                            className="bg-cyan-400 h-2 rounded-full transition-all duration-300"
+                            style={{ width: `${ocrProgress.percent}%` }}
+                          />
+                        </div>
+                        <div className="text-xs mt-1">{ocrProgress.percent}%</div>
+                      </div>
+                    ) : (
+                      <div>PDF wird verarbeitet...</div>
+                    )}
                   </div>
                 ) : isDragging ? (
                   <div className="text-cyan-300">
