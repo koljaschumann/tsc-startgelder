@@ -639,9 +639,9 @@ function App() {
     }
   };
 
-  // === VERBESSERTER PARSER v17 - MANAGE2SAIL OPTIMIERT ===
+  // === ROBUSTER PARSER v18 - MULTI-FORMAT ===
   const parseRegattaPDF = (text, sailNumber) => {
-    console.log('=== PARSING START (v17 Parser) ===');
+    console.log('=== PARSING START (v18 Robust Parser) ===');
     console.log('Segelnummer:', sailNumber);
     console.log('Text-Länge:', text?.length);
     
@@ -654,7 +654,8 @@ function App() {
       totalParticipants: 0,
       participant: null,
       allResults: [],
-      feedback: null
+      feedback: null,
+      confidence: 'low'
     };
 
     if (!text || !sailNumber) {
@@ -668,205 +669,265 @@ function App() {
       const normalizedSail = sailNumber.replace(/\s+/g, '').toUpperCase();
       console.log('Suche Segelnummer:', normalizedSail, 'Nur Ziffern:', sailNumberOnly);
       
-      // === MANAGE2SAIL ERKENNUNG ===
+      // === FORMAT ERKENNUNG ===
       const isManage2Sail = text.includes('manage2sail') || text.includes('Manage2Sail') || 
                            text.includes('Final Overall Results') || text.includes('Discard rule');
-      console.log('Manage2Sail erkannt:', isManage2Sail);
+      const hasBugNr = /bug\.?\s*nr|startnr|start\.?\s*nr/i.test(text);
+      const hasRankColumn = /\bRk\.|\bRang\b|\bPlatz\b|\bPos\b/i.test(text);
+      
+      console.log('Format-Erkennung:', { isManage2Sail, hasBugNr, hasRankColumn });
       
       // === REGATTA-NAME EXTRAHIEREN ===
-      // Für Manage2Sail: Der Name steht vor "Final Overall Results"
-      if (isManage2Sail) {
-        const nameMatch = text.match(/(?:Page \d+ of \d+\s*)?([A-Za-zäöüÄÖÜß\-\s]+(?:Cup|Pokal|Preis|Trophy|Regatta|Meisterschaft)?[\s]*\d{4})\s*(?:Final|Overall)/i);
-        if (nameMatch) {
-          result.regattaName = nameMatch[1].trim().replace(/\s+/g, ' ');
-        }
-      }
+      let regattaName = null;
       
-      // Fallback Patterns
-      if (!result.regattaName) {
-        const namePatterns = [
-          /([A-Za-zäöüÄÖÜß\-]+(?:[\s\-][A-Za-zäöüÄÖÜß\-]+)*[\s\-]*(?:Cup|Pokal|Preis|Trophy|Regatta|Meisterschaft)[\s\-]*\d{4})/i,
-          /([A-ZÄÖÜ][A-Za-zäöüÄÖÜß\s\-]{5,40}(?:Cup|Pokal|Preis|Trophy|Regatta|Meisterschaft))/i,
-        ];
-        
-        for (const pattern of namePatterns) {
-          const match = text.match(pattern);
-          if (match) {
-            result.regattaName = match[1].trim().replace(/\s+/g, ' ');
-            if (result.regattaName.length > 5) break;
-          }
-        }
-      }
-      
-      // === BOOTSKLASSE ERKENNEN ===
-      const classPatterns = [
-        /(Optimist\s*[AB]?|ILCA\s*[467]|Laser|420er?|470er?|29er|49er|Europe|Finn|OK[\-\s]?Jolle|Pirat|Korsar)/i,
+      // Pattern 1: "Xyz Cup 2025" oder "Abc Pokal 2024"
+      const namePatterns = [
+        /([A-Za-zäöüÄÖÜß\-]+(?:[\s\-][A-Za-zäöüÄÖÜß\-]+)*[\s\-]*(?:Preis|Pokal|Cup|Trophy|Regatta|Festival|Meisterschaft)[\s\-]*\d{4})/i,
+        /([A-Za-zäöüÄÖÜß\-]+(?:pokal|cup|preis|trophy|regatta|meisterschaft))/i,
       ];
       
-      for (const pattern of classPatterns) {
+      for (const pattern of namePatterns) {
         const match = text.match(pattern);
-        if (match) {
-          result.boatClass = match[1].trim();
+        if (match && match[1].length > 5 && match[1].length < 60) {
+          regattaName = match[1].trim();
           break;
         }
       }
       
-      // === DATUM EXTRAHIEREN ===
-      const dateMatch = text.match(/(\d{1,2})[.\-\/\s]+(?:OKT|NOV|DEZ|JAN|FEB|MÄR|APR|MAI|JUN|JUL|AUG|SEP)[.\-\/\s]+(\d{4})/i);
-      if (dateMatch) {
-        const months = { 'JAN': '01', 'FEB': '02', 'MÄR': '03', 'APR': '04', 'MAI': '05', 'JUN': '06', 
-                        'JUL': '07', 'AUG': '08', 'SEP': '09', 'OKT': '10', 'NOV': '11', 'DEZ': '12' };
-        const monthMatch = text.match(/(OKT|NOV|DEZ|JAN|FEB|MÄR|APR|MAI|JUN|JUL|AUG|SEP)/i);
-        if (monthMatch) {
-          result.date = `${dateMatch[2]}-${months[monthMatch[1].toUpperCase()]}-${dateMatch[1].padStart(2, '0')}`;
-        }
-      } else {
-        const simpleDateMatch = text.match(/(\d{1,2})[.\-\/](\d{1,2})[.\-\/](\d{2,4})/);
-        if (simpleDateMatch) {
-          const day = simpleDateMatch[1].padStart(2, '0');
-          const month = simpleDateMatch[2].padStart(2, '0');
-          let year = simpleDateMatch[3];
-          if (year.length === 2) year = '20' + year;
-          result.date = `${year}-${month}-${day}`;
-        }
-      }
-      
-      // === WETTFAHRTEN ZÄHLEN ===
-      const raceHeaders = text.match(/\bR(\d+)\b/gi);
-      if (raceHeaders) {
-        const uniqueRaces = [...new Set(raceHeaders.map(r => parseInt(r.slice(1))))].filter(n => n > 0 && n < 20);
-        result.raceCount = uniqueRaces.length > 0 ? Math.max(...uniqueRaces) : 0;
-        console.log('Wettfahrten gefunden:', result.raceCount);
-      }
-      
-      // === ALLE TEILNEHMER FINDEN ===
-      const allParticipants = [];
-      
-      // MANAGE2SAIL FORMAT: "Rk. Sail Number Name Club R1 R2 ... Total Net"
-      // Beispiel: "23 GER 13162 Moritz SCHUMANN Tegeler Segel-Club e.V. 17 20 22 (28) 23 110 82"
-      // Der Trick: Platzierung + Ländercode + Segelnummer sind zusammen am Anfang
-      
-      // Pattern für Manage2Sail: Platzierung Ländercode Segelnummer
-      // Wir suchen: Zahl(1-3 Stellen) + Leerzeichen + GER/AUT/etc + Leerzeichen/nichts + Zahl(Segelnummer)
-      const manage2sailPattern = /\b(\d{1,3})\s+([A-Z]{2,3})\s*(\d{3,6})\s+([A-Za-zäöüÄÖÜß\-]+)\s+([A-ZÄÖÜ]+)/g;
-      
-      let match;
-      while ((match = manage2sailPattern.exec(text)) !== null) {
-        const rank = parseInt(match[1]);
-        const country = match[2];
-        const sailNum = match[3];
-        const firstName = match[4];
-        const lastName = match[5];
-        
-        // Validierung: Platzierung muss realistisch sein
-        if (rank > 0 && rank <= 200) {
-          // Prüfe ob nicht schon vorhanden
-          const sailKey = country + sailNum;
-          if (!allParticipants.find(p => p.sailNumber === sailKey)) {
-            allParticipants.push({
-              rank,
-              sailNumber: sailKey,
-              name: `${firstName} ${lastName}`,
-              fullMatch: match[0]
-            });
+      // Fallback: Suche nach Zeilen die wie Titel aussehen
+      if (!regattaName) {
+        const lines = text.split(/[\n\r]+/);
+        for (const line of lines.slice(0, 10)) {
+          const clean = line.trim();
+          if (clean.length > 8 && clean.length < 50 && 
+              !clean.includes('http') && !clean.includes('Seite') &&
+              !/^\d+\s*$/.test(clean) && !/^Nr\.?\s/i.test(clean)) {
+            regattaName = clean;
+            break;
           }
         }
       }
       
-      // Fallback Pattern: Einfacher "Platz Ländercode Segelnummer"
-      if (allParticipants.length === 0) {
-        const simplePattern = /\b(\d{1,3})\s+([A-Z]{2,3})\s*(\d{3,6})\b/g;
-        while ((match = simplePattern.exec(text)) !== null) {
-          const rank = parseInt(match[1]);
-          const country = match[2];
-          const sailNum = match[3];
+      result.regattaName = regattaName || 'Regatta';
+      
+      // === BOOTSKLASSE ERKENNEN ===
+      const classMatch = text.match(/(Optimist\s*[AB]?|ILCA\s*[467]|Laser|420er?|470er?|29er|49er|Europe|Finn|OK[\-\s]?Jolle|Pirat|Korsar|O'pen\s*Skiff|Open\s*Skiff)/i);
+      if (classMatch) {
+        result.boatClass = classMatch[1].trim();
+      }
+      
+      // === DATUM EXTRAHIEREN ===
+      const datePatterns = [
+        /(\d{1,2})[.\-\/\s]+(?:OKT|NOV|DEZ|JAN|FEB|MÄR|APR|MAI|JUN|JUL|AUG|SEP)[ÄOBER]*[.\-\/\s]+(\d{4})/i,
+        /(\d{1,2})[.\-\/](\d{1,2})[.\-\/](\d{2,4})/,
+      ];
+      
+      for (const pattern of datePatterns) {
+        const match = text.match(pattern);
+        if (match) {
+          if (match.length === 3) {
+            // Monat als Text
+            const months = { 'JAN': '01', 'FEB': '02', 'MÄR': '03', 'MAR': '03', 'APR': '04', 
+                           'MAI': '05', 'JUN': '06', 'JUL': '07', 'AUG': '08', 'SEP': '09', 
+                           'OKT': '10', 'OCT': '10', 'NOV': '11', 'DEZ': '12', 'DEC': '12' };
+            const monthText = text.match(/(OKT|NOV|DEZ|JAN|FEB|MÄR|MAR|APR|MAI|JUN|JUL|AUG|SEP)/i);
+            if (monthText) {
+              result.date = `${match[2]}-${months[monthText[1].toUpperCase()]}-${match[1].padStart(2, '0')}`;
+            }
+          } else if (match.length === 4) {
+            const day = match[1].padStart(2, '0');
+            const month = match[2].padStart(2, '0');
+            let year = match[3];
+            if (year.length === 2) year = '20' + year;
+            result.date = `${year}-${month}-${day}`;
+          }
+          break;
+        }
+      }
+      
+      // === WETTFAHRTEN ZÄHLEN ===
+      const raceMatches = text.match(/\bR(\d+)\b/gi) || text.match(/\bWF\s*(\d+)\b/gi);
+      if (raceMatches) {
+        const nums = [...new Set(raceMatches.map(r => parseInt(r.replace(/\D/g, ''))))].filter(n => n > 0 && n < 20);
+        result.raceCount = nums.length > 0 ? Math.max(...nums) : 0;
+      }
+      
+      // === ALLE TEILNEHMER FINDEN ===
+      const allParticipants = [];
+      const lines = text.split(/[\n\r]+/);
+      
+      // Finde die Zeile mit der gesuchten Segelnummer
+      let sailNumberLine = null;
+      let sailNumberLineIndex = -1;
+      
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (line.includes(sailNumberOnly) || line.toUpperCase().includes(normalizedSail)) {
+          sailNumberLine = line;
+          sailNumberLineIndex = i;
+          console.log('Gefunden in Zeile', i, ':', line.slice(0, 120));
+          break;
+        }
+      }
+      
+      // === SPALTENSTRUKTUR ANALYSIEREN ===
+      // Suche nach Header-Zeile um zu verstehen welche Spalte was ist
+      let rankColumnIndex = 0; // Default: erste Spalte ist Rang
+      
+      for (const line of lines.slice(0, 20)) {
+        const lowerLine = line.toLowerCase();
+        if (lowerLine.includes('nr.') || lowerLine.includes('rang') || lowerLine.includes('platz') || lowerLine.includes('rk.')) {
+          // Analysiere Spaltenreihenfolge
+          const columns = line.split(/\s{2,}|\t/);
+          console.log('Header-Spalten:', columns);
           
-          if (rank > 0 && rank <= 200) {
-            const sailKey = country + sailNum;
-            if (!allParticipants.find(p => p.sailNumber === sailKey)) {
-              allParticipants.push({
-                rank,
-                sailNumber: sailKey,
-                fullMatch: match[0]
-              });
+          for (let i = 0; i < columns.length; i++) {
+            const col = columns[i].toLowerCase().trim();
+            // "Nr." ohne "Bug" davor ist die Platzierung
+            if ((col === 'nr.' || col === 'nr' || col.includes('rang') || col.includes('platz') || col === 'rk.') 
+                && !col.includes('bug') && !col.includes('start') && !col.includes('segel')) {
+              rankColumnIndex = i;
+              console.log('Rang-Spalte gefunden bei Index:', i, '- Wert:', col);
+              break;
+            }
+          }
+          break;
+        }
+      }
+      
+      // === PLATZIERUNG EXTRAHIEREN ===
+      if (sailNumberLine) {
+        // Extrahiere alle Zahlen aus der Zeile
+        const allNumbers = [];
+        const numberPattern = /\b(\d{1,4})\b/g;
+        let match;
+        let lastIndex = 0;
+        
+        while ((match = numberPattern.exec(sailNumberLine)) !== null) {
+          // Position der Segelnummer finden
+          const sailPos = sailNumberLine.indexOf(sailNumberOnly);
+          
+          // Nur Zahlen VOR der Segelnummer berücksichtigen
+          if (match.index < sailPos) {
+            allNumbers.push({
+              value: parseInt(match[1]),
+              index: match.index,
+              position: allNumbers.length
+            });
+          }
+        }
+        
+        console.log('Zahlen vor Segelnummer:', allNumbers);
+        
+        // Wähle die richtige Zahl basierend auf der Spaltenanalyse
+        let rank = null;
+        
+        if (allNumbers.length > 0) {
+          if (hasBugNr && allNumbers.length >= 2) {
+            // Bei Bug.Nr.: ERSTE Zahl ist normalerweise der Rang
+            rank = allNumbers[0].value;
+            console.log('Bug.Nr. erkannt - nehme erste Zahl als Rang:', rank);
+          } else if (allNumbers.length === 1) {
+            // Nur eine Zahl -> muss der Rang sein
+            rank = allNumbers[0].value;
+          } else {
+            // Mehrere Zahlen ohne Bug.Nr. -> wähle basierend auf Position
+            // Bei Manage2Sail: erste Zahl ist Rang
+            rank = allNumbers[rankColumnIndex]?.value || allNumbers[0].value;
+          }
+        }
+        
+        // Plausibilitätsprüfung: Wenn Rang > 500, wahrscheinlich falsch
+        if (rank && rank > 500) {
+          console.log('Rang unplausibel hoch:', rank, '- verwerfe');
+          rank = null;
+        }
+        
+        if (rank) {
+          result.participant = {
+            rank,
+            sailNumber: normalizedSail,
+            name: boatData.seglername,
+          };
+          result.success = true;
+          result.confidence = allNumbers.length === 1 ? 'high' : 'medium';
+        }
+      }
+      
+      // === ALLE TEILNEHMER ZÄHLEN ===
+      // Suche nach allen Zeilen die wie Ergebniszeilen aussehen
+      // Pattern: Zahl am Anfang, gefolgt von Segelnummer
+      
+      for (const line of lines) {
+        // Suche nach Mustern: "Zahl ... GER/AUT/etc Zahl" oder "Zahl ... Zahl (4-5 stellig)"
+        const participantMatch = line.match(/^\s*(\d{1,3})\s+.*?(?:([A-Z]{2,3})\s*)?(\d{4,6})\b/);
+        if (participantMatch) {
+          const rank = parseInt(participantMatch[1]);
+          if (rank > 0 && rank <= 300) {
+            const sailNum = (participantMatch[2] || 'GER') + participantMatch[3];
+            if (!allParticipants.find(p => p.sailNumber === sailNum)) {
+              allParticipants.push({ rank, sailNumber: sailNum });
+            }
+          }
+        }
+        
+        // Alternative: Manage2Sail Format
+        const m2sMatch = line.match(/\b(\d{1,3})\s+([A-Z]{2,3})\s*(\d{3,6})\b/);
+        if (m2sMatch) {
+          const rank = parseInt(m2sMatch[1]);
+          if (rank > 0 && rank <= 300) {
+            const sailNum = m2sMatch[2] + m2sMatch[3];
+            if (!allParticipants.find(p => p.sailNumber === sailNum)) {
+              allParticipants.push({ rank, sailNumber: sailNum });
             }
           }
         }
       }
       
-      console.log('Gefundene Teilnehmer:', allParticipants.length);
+      // Gesamtteilnehmer = höchste eindeutige Platzierung
       if (allParticipants.length > 0) {
-        console.log('Erste 5:', allParticipants.slice(0, 5).map(p => `${p.rank}. ${p.sailNumber}`));
-        console.log('Letzte 5:', allParticipants.slice(-5).map(p => `${p.rank}. ${p.sailNumber}`));
-      }
-      
-      // === GESAMTTEILNEHMER BESTIMMEN ===
-      // Bei Manage2Sail: Nur Teilnehmer mit echten Ergebnissen zählen (nicht DNC)
-      // DNC-Teilnehmer haben oft die gleiche Platzierung (z.B. alle 29.)
-      if (allParticipants.length > 0) {
-        // Sortiere nach Platzierung
         allParticipants.sort((a, b) => a.rank - b.rank);
         
-        // Finde die höchste EINDEUTIGE Platzierung
+        // Finde höchste Platzierung die nicht mehrfach vorkommt (DNC-Erkennung)
         const rankCounts = {};
-        allParticipants.forEach(p => {
-          rankCounts[p.rank] = (rankCounts[p.rank] || 0) + 1;
-        });
+        allParticipants.forEach(p => rankCounts[p.rank] = (rankCounts[p.rank] || 0) + 1);
         
-        // Höchste Platzierung die nur 1x vorkommt = letzte gewertete Platzierung
-        let lastScoredRank = 0;
-        for (const [rank, count] of Object.entries(rankCounts).sort((a, b) => parseInt(a[0]) - parseInt(b[0]))) {
-          if (count === 1) {
-            lastScoredRank = parseInt(rank);
-          } else {
-            // Wenn mehrere die gleiche Platzierung haben (DNC), stoppe
-            break;
+        let maxUniqueRank = 0;
+        for (const [rank, count] of Object.entries(rankCounts)) {
+          if (count === 1 && parseInt(rank) > maxUniqueRank) {
+            maxUniqueRank = parseInt(rank);
           }
         }
         
-        // Wenn alle eindeutig, nimm die höchste
-        if (lastScoredRank === 0) {
-          lastScoredRank = Math.max(...allParticipants.map(p => p.rank));
-        }
-        
-        result.totalParticipants = lastScoredRank;
+        result.totalParticipants = maxUniqueRank || Math.max(...allParticipants.map(p => p.rank));
         result.allResults = allParticipants;
-        
-        console.log('Gewertete Teilnehmer:', result.totalParticipants);
       }
       
-      // === GESUCHTE SEGELNUMMER FINDEN ===
-      const foundParticipant = allParticipants.find(p => {
-        const pSailNum = p.sailNumber.replace(/[^0-9]/g, '');
-        return pSailNum === sailNumberOnly || p.sailNumber.toUpperCase().includes(sailNumberOnly);
-      });
+      // === PLAUSIBILITÄTSPRÜFUNG ===
+      if (result.participant && result.totalParticipants > 0) {
+        if (result.participant.rank > result.totalParticipants) {
+          console.log('WARNUNG: Rang', result.participant.rank, '> Teilnehmer', result.totalParticipants);
+          result.feedback = `Bitte prüfen: Platz ${result.participant.rank} bei ${result.totalParticipants} Teilnehmern?`;
+          result.confidence = 'low';
+        } else {
+          result.confidence = 'high';
+        }
+      }
       
-      if (foundParticipant) {
-        console.log('✓ Eigene Platzierung gefunden:', foundParticipant.rank, foundParticipant.sailNumber);
-        result.participant = {
-          rank: foundParticipant.rank,
-          sailNumber: foundParticipant.sailNumber,
-          name: foundParticipant.name || boatData.seglername,
-        };
-        result.success = true;
-      } else {
-        // Fallback: Direkte Suche
-        console.log('Segelnummer nicht in Liste, suche direkt im Text...');
-        
-        // Suche das spezifische Muster: "Platz GER Segelnummer"
-        const directPattern = new RegExp(`(\\d{1,3})\\s+(?:GER|[A-Z]{2,3})\\s*${sailNumberOnly}\\b`, 'i');
-        const directMatch = text.match(directPattern);
-        
-        if (directMatch) {
-          const rank = parseInt(directMatch[1]);
-          if (rank > 0 && rank <= 200) {
+      // === FALLBACK: Direkte Suche ===
+      if (!result.participant && sailNumberLine) {
+        // Nimm einfach die erste plausible Zahl am Zeilenanfang
+        const firstNumberMatch = sailNumberLine.match(/^\s*(\d{1,3})\b/);
+        if (firstNumberMatch) {
+          const rank = parseInt(firstNumberMatch[1]);
+          if (rank > 0 && rank <= 300) {
             result.participant = {
               rank,
-              sailNumber: 'GER' + sailNumberOnly,
+              sailNumber: normalizedSail,
               name: boatData.seglername,
             };
             result.success = true;
-            console.log('✓ Platzierung aus Direktsuche:', rank);
+            result.confidence = 'medium';
           }
         }
       }
@@ -880,17 +941,15 @@ function App() {
       
       // Feedback generieren
       if (!result.participant) {
-        result.feedback = `Segelnummer "${sailNumber}" wurde nicht gefunden. `;
+        result.feedback = `Segelnummer "${sailNumber}" nicht gefunden. `;
         if (text.includes(sailNumberOnly)) {
           result.feedback += 'Die Ziffern wurden im Text gefunden - bitte manuell korrigieren.';
-        } else {
-          result.feedback += 'Bitte prüfe ob die Segelnummer korrekt ist.';
         }
       }
       
       console.log('=== PARSING ERGEBNIS ===');
       console.log('Regatta:', result.regattaName);
-      console.log('Platzierung:', result.participant?.rank);
+      console.log('Platzierung:', result.participant?.rank, '(Konfidenz:', result.confidence + ')');
       console.log('Teilnehmer:', result.totalParticipants);
       console.log('Wettfahrten:', result.raceCount);
       
@@ -1941,11 +2000,26 @@ function App() {
                         <div className="text-sm">{ocrProgress?.status || 'Verarbeite PDF...'}</div>
                       </div>
                     ) : pdfResult ? (
-                      <div className={isDark ? 'text-emerald-400' : 'text-emerald-600'}>
-                        <svg className="w-12 h-12 mx-auto mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
+                      <div className={
+                        pdfResult.confidence === 'high' 
+                          ? (isDark ? 'text-emerald-400' : 'text-emerald-600')
+                          : pdfResult.confidence === 'medium'
+                            ? (isDark ? 'text-amber-400' : 'text-amber-600')
+                            : (isDark ? 'text-amber-400' : 'text-amber-600')
+                      }>
+                        {pdfResult.confidence === 'high' ? (
+                          <svg className="w-12 h-12 mx-auto mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
+                        ) : (
+                          <svg className="w-12 h-12 mx-auto mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+                        )}
                         <div className="font-medium">{pdfResult.regattaName || 'Ergebnisliste erkannt'}</div>
                         {pdfResult.participant ? (
-                          <div className="text-sm mt-1">Platz {pdfResult.participant.rank} von {pdfResult.totalParticipants}</div>
+                          <>
+                            <div className="text-sm mt-1">Platz {pdfResult.participant.rank} von {pdfResult.totalParticipants || '?'}</div>
+                            {pdfResult.confidence !== 'high' && (
+                              <div className="text-xs mt-1">⚠️ Bitte Werte unten prüfen</div>
+                            )}
+                          </>
                         ) : (
                           <div className={`text-sm mt-1 ${isDark ? 'text-amber-400' : 'text-amber-600'}`}>Platzierung nicht erkannt</div>
                         )}
@@ -2020,12 +2094,39 @@ function App() {
                           />
                         </div>
                         <div>
-                          <label className={`block text-xs mb-1 ${isDark ? 'text-slate-500' : 'text-slate-500'}`}>Parser-Info</label>
-                          <div className={`px-3 py-2 rounded-lg text-sm ${isDark ? 'bg-slate-800 text-slate-400' : 'bg-slate-200 text-slate-600'}`}>
-                            {parserUsed || 'Manuell'}
+                          <label className={`block text-xs mb-1 ${isDark ? 'text-slate-500' : 'text-slate-500'}`}>Erkennungssicherheit</label>
+                          <div className={`px-3 py-2 rounded-lg text-sm flex items-center gap-2 ${isDark ? 'bg-slate-800' : 'bg-slate-200'}`}>
+                            {pdfResult?.confidence === 'high' && (
+                              <>
+                                <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                                <span className="text-emerald-500">Hoch</span>
+                              </>
+                            )}
+                            {pdfResult?.confidence === 'medium' && (
+                              <>
+                                <span className="w-2 h-2 rounded-full bg-amber-500"></span>
+                                <span className="text-amber-500">Mittel - bitte prüfen</span>
+                              </>
+                            )}
+                            {(!pdfResult?.confidence || pdfResult?.confidence === 'low') && (
+                              <>
+                                <span className="w-2 h-2 rounded-full bg-red-500"></span>
+                                <span className="text-red-500">Niedrig - bitte prüfen</span>
+                              </>
+                            )}
+                            <span className={`ml-auto text-xs ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
+                              {parserUsed || 'Manuell'}
+                            </span>
                           </div>
                         </div>
                       </div>
+                      
+                      {/* Warnung bei niedriger Konfidenz */}
+                      {pdfResult?.feedback && (
+                        <div className={`mt-3 p-3 rounded-lg text-sm ${isDark ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' : 'bg-amber-50 text-amber-700 border border-amber-200'}`}>
+                          ⚠️ {pdfResult.feedback}
+                        </div>
+                      )}
                       
                       {/* Debug: Extrahierter Text (ausklappbar) */}
                       {debugText && (
