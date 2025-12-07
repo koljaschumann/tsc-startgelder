@@ -729,31 +729,42 @@ function App() {
       }
       
       // === DATUM EXTRAHIEREN ===
-      const datePatterns = [
-        /(\d{1,2})[.\-\/\s]+(?:OKT|NOV|DEZ|JAN|FEB|MÄR|APR|MAI|JUN|JUL|AUG|SEP)[ÄOBER]*[.\-\/\s]+(\d{4})/i,
-        /(\d{1,2})[.\-\/](\d{1,2})[.\-\/](\d{2,4})/,
-      ];
+      // Monats-Mapping
+      const monthsMap = { 
+        'JAN': '01', 'JANUAR': '01',
+        'FEB': '02', 'FEBRUAR': '02',
+        'MÄR': '03', 'MAR': '03', 'MÄRZ': '03', 'MAERZ': '03',
+        'APR': '04', 'APRIL': '04',
+        'MAI': '05', 'MAY': '05',
+        'JUN': '06', 'JUNI': '06', 'JUNE': '06',
+        'JUL': '07', 'JULI': '07', 'JULY': '07',
+        'AUG': '08', 'AUGUST': '08',
+        'SEP': '09', 'SEPT': '09', 'SEPTEMBER': '09',
+        'OKT': '10', 'OCT': '10', 'OKTOBER': '10', 'OCTOBER': '10',
+        'NOV': '11', 'NOVEMBER': '11',
+        'DEZ': '12', 'DEC': '12', 'DEZEMBER': '12', 'DECEMBER': '12'
+      };
       
-      for (const pattern of datePatterns) {
-        const match = text.match(pattern);
-        if (match) {
-          if (match.length === 3) {
-            // Monat als Text
-            const months = { 'JAN': '01', 'FEB': '02', 'MÄR': '03', 'MAR': '03', 'APR': '04', 
-                           'MAI': '05', 'JUN': '06', 'JUL': '07', 'AUG': '08', 'SEP': '09', 
-                           'OKT': '10', 'OCT': '10', 'NOV': '11', 'DEZ': '12', 'DEC': '12' };
-            const monthText = text.match(/(OKT|NOV|DEZ|JAN|FEB|MÄR|MAR|APR|MAI|JUN|JUL|AUG|SEP)/i);
-            if (monthText) {
-              result.date = `${match[2]}-${months[monthText[1].toUpperCase()]}-${match[1].padStart(2, '0')}`;
-            }
-          } else if (match.length === 4) {
-            const day = match[1].padStart(2, '0');
-            const month = match[2].padStart(2, '0');
-            let year = match[3];
-            if (year.length === 2) year = '20' + year;
-            result.date = `${year}-${month}-${day}`;
-          }
-          break;
+      // Pattern 1: "13 JUL 2025" oder "13. Juli 2025" - Monat wird erfasst
+      const textDateMatch = text.match(/(\d{1,2})[\.\s\-\/]*(JAN(?:UAR)?|FEB(?:RUAR)?|MÄR(?:Z)?|MAR(?:CH)?|MAERZ|APR(?:IL)?|MAI|MAY|JUN(?:I|E)?|JUL(?:I|Y)?|AUG(?:UST)?|SEP(?:T(?:EMBER)?)?|OKT(?:OBER)?|OCT(?:OBER)?|NOV(?:EMBER)?|DEZ(?:EMBER)?|DEC(?:EMBER)?)[\.\s\-\/]*(\d{4})/i);
+      
+      if (textDateMatch) {
+        const day = textDateMatch[1].padStart(2, '0');
+        const monthKey = textDateMatch[2].toUpperCase();
+        const year = textDateMatch[3];
+        const month = monthsMap[monthKey] || '01';
+        result.date = `${year}-${month}-${day}`;
+        console.log('Datum gefunden (Text):', result.date, 'aus', textDateMatch[0]);
+      } else {
+        // Pattern 2: "13.07.2025" oder "13/07/25"
+        const numDateMatch = text.match(/(\d{1,2})[.\-\/](\d{1,2})[.\-\/](\d{2,4})/);
+        if (numDateMatch) {
+          const day = numDateMatch[1].padStart(2, '0');
+          const month = numDateMatch[2].padStart(2, '0');
+          let year = numDateMatch[3];
+          if (year.length === 2) year = '20' + year;
+          result.date = `${year}-${month}-${day}`;
+          console.log('Datum gefunden (Numerisch):', result.date);
         }
       }
       
@@ -928,7 +939,7 @@ function App() {
       
       console.log('Gefundene Teilnehmer:', allParticipants.length, hasBugNr ? '(Bug.Nr. Format)' : '(Standard Format)');
       
-      // Gesamtteilnehmer = höchste eindeutige Platzierung
+      // Gesamtteilnehmer bestimmen
       if (allParticipants.length > 0) {
         allParticipants.sort((a, b) => a.rank - b.rank);
         
@@ -943,8 +954,36 @@ function App() {
           }
         }
         
-        result.totalParticipants = maxUniqueRank || Math.max(...allParticipants.map(p => p.rank));
+        // Bei Bug.Nr. Format: Prüfe ob die höchste Platzierung plausibel ist
+        // Wenn sie viel höher ist als die Anzahl gefundener Teilnehmer, 
+        // dann wurde wahrscheinlich die Bug.Nr. statt der Platzierung gezählt
+        if (hasBugNr) {
+          const foundCount = allParticipants.length;
+          const highestRank = maxUniqueRank || Math.max(...allParticipants.map(p => p.rank));
+          
+          // Wenn höchster Rang > 1.5x Anzahl gefundener Teilnehmer → unplausibel
+          if (highestRank > foundCount * 1.5 && foundCount > 10) {
+            console.log('Bug.Nr. Format: Höchster Rang', highestRank, 'unplausibel bei', foundCount, 'Teilnehmern');
+            // Nutze die Anzahl der gefundenen Teilnehmer als Schätzung
+            result.totalParticipants = foundCount;
+          } else {
+            result.totalParticipants = maxUniqueRank || highestRank;
+          }
+        } else {
+          result.totalParticipants = maxUniqueRank || Math.max(...allParticipants.map(p => p.rank));
+        }
+        
         result.allResults = allParticipants;
+      }
+      
+      // Zusätzlich: Suche nach expliziter Teilnehmeranzahl im Text
+      const entriesMatch = text.match(/(\d+)\s*(?:Entries|Teilnehmer|Meldungen|Boote|entries|teilnehmer)/i);
+      if (entriesMatch && (!result.totalParticipants || result.totalParticipants === 0)) {
+        const explicitCount = parseInt(entriesMatch[1]);
+        if (explicitCount > 0 && explicitCount < 500) {
+          console.log('Explizite Teilnehmerzahl gefunden:', explicitCount);
+          result.totalParticipants = explicitCount;
+        }
       }
       
       // === PLAUSIBILITÄTSPRÜFUNG ===
