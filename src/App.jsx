@@ -936,6 +936,8 @@ function App() {
 
   // === PDF EXPORT (Gesamtantrag mit Anhängen) ===
   const generatePDF = () => {
+    console.log('generatePDF aufgerufen, regatten:', regatten.length);
+    
     if (regatten.length === 0) {
       setError('Keine Regatten vorhanden - bitte erst Regatten hinzufügen');
       return null;
@@ -943,6 +945,7 @@ function App() {
     
     try {
       const doc = new jsPDF();
+      console.log('jsPDF erstellt');
       
       // === SEITE 1: ANTRAGSFORMULAR ===
       
@@ -972,97 +975,87 @@ function App() {
       
       doc.setFontSize(10);
       doc.setFont('helvetica', 'normal');
-      doc.text([
-        `Name: ${boatData.seglername || '-'}`,
-        `Segelnummer: ${boatData.segelnummer || '-'}`,
-        `Bootsklasse: ${boatData.bootsklasse || '-'}`,
-      ], 25, 56);
-      
-      doc.text([
-        `IBAN: ${boatData.iban || '-'}`,
-        `Kontoinhaber:in: ${boatData.kontoinhaber || '-'}`,
-      ], 110, 56);
+      doc.text(`Name: ${boatData.seglername || '-'}`, 25, 56);
+      doc.text(`Segelnummer: ${boatData.segelnummer || '-'}`, 25, 62);
+      doc.text(`Bootsklasse: ${boatData.bootsklasse || '-'}`, 25, 68);
+      doc.text(`IBAN: ${boatData.iban || '-'}`, 110, 56);
+      doc.text(`Kontoinhaber:in: ${boatData.kontoinhaber || '-'}`, 110, 62);
       
       // Regatten-Tabelle
       doc.setFontSize(12);
       doc.setFont('helvetica', 'bold');
       doc.text('Besuchte Regatten', 20, 85);
       
-      doc.autoTable({
-        startY: 90,
-        head: [['Nr.', 'Regatta', 'Datum', 'Platz', 'Boote', 'Wettf.', 'Startgeld']],
-        body: regatten.map((r, i) => [
-          (i + 1).toString(),
-          r.regattaName || '-',
-          r.date ? new Date(r.date).toLocaleDateString('de-DE') : '-',
-          r.placement ? `${r.placement}.` : '-',
-          r.totalParticipants || '-',
-          r.raceCount || '-',
-          r.invoiceAmount ? `${r.invoiceAmount.toFixed(2)} €` : '-'
-        ]),
-        foot: [['', '', '', '', '', 'Gesamt:', `${totalAmount.toFixed(2)} €`]],
-        theme: 'grid',
-        headStyles: { 
-          fillColor: [139, 92, 246], 
-          fontStyle: 'bold',
-          halign: 'center'
-        },
-        footStyles: { 
-          fillColor: [16, 185, 129], 
-          fontStyle: 'bold',
-          textColor: [255, 255, 255]
-        },
-        columnStyles: {
-          0: { halign: 'center', cellWidth: 12 },
-          3: { halign: 'center' },
-          4: { halign: 'center' },
-          5: { halign: 'center' },
-          6: { halign: 'right' }
-        },
-        styles: { fontSize: 9 }
-      });
-      
-      // Anlagen-Liste
-      const afterTableY = doc.lastAutoTable.finalY + 15;
-      doc.setFontSize(10);
-      doc.setFont('helvetica', 'bold');
-      doc.text('Anlagen (siehe folgende Seiten):', 20, afterTableY);
-      doc.setFont('helvetica', 'normal');
-      
-      let anlagenY = afterTableY + 6;
-      regatten.forEach((r, i) => {
-        doc.text(`${i + 1}. ${r.regattaName || 'Regatta'}: Ergebnisliste + Rechnung`, 25, anlagenY);
-        anlagenY += 5;
-      });
+      // AutoTable nur wenn verfügbar
+      if (typeof doc.autoTable === 'function') {
+        doc.autoTable({
+          startY: 90,
+          head: [['Nr.', 'Regatta', 'Datum', 'Platz', 'Boote', 'Wettf.', 'Startgeld']],
+          body: regatten.map((r, i) => [
+            (i + 1).toString(),
+            r.regattaName || '-',
+            r.date ? new Date(r.date).toLocaleDateString('de-DE') : '-',
+            r.placement ? `${r.placement}.` : '-',
+            r.totalParticipants || '-',
+            r.raceCount || '-',
+            r.invoiceAmount ? `${r.invoiceAmount.toFixed(2)} €` : '-'
+          ]),
+          foot: [['', '', '', '', '', 'Gesamt:', `${totalAmount.toFixed(2)} €`]],
+          theme: 'grid',
+          headStyles: { fillColor: [139, 92, 246], fontStyle: 'bold', halign: 'center' },
+          footStyles: { fillColor: [16, 185, 129], fontStyle: 'bold', textColor: [255, 255, 255] },
+          columnStyles: {
+            0: { halign: 'center', cellWidth: 12 },
+            3: { halign: 'center' },
+            4: { halign: 'center' },
+            5: { halign: 'center' },
+            6: { halign: 'right' }
+          },
+          styles: { fontSize: 9 }
+        });
+      } else {
+        // Fallback ohne autoTable
+        console.warn('autoTable nicht verfügbar, einfache Tabelle');
+        let y = 95;
+        regatten.forEach((r, i) => {
+          doc.setFontSize(9);
+          doc.text(`${i+1}. ${r.regattaName}: ${r.invoiceAmount?.toFixed(2) || '0'} € (Platz ${r.placement || '?'})`, 25, y);
+          y += 6;
+        });
+        doc.setFont('helvetica', 'bold');
+        doc.text(`Gesamt: ${totalAmount.toFixed(2)} €`, 25, y + 5);
+      }
       
       // Crew-Details (falls vorhanden)
+      const afterTableY = doc.lastAutoTable?.finalY || 150;
+      let currentY = afterTableY + 15;
+      
       const regattasWithCrew = regatten.filter(r => r.crew && r.crew.length > 0);
       if (regattasWithCrew.length > 0) {
-        anlagenY += 10;
+        doc.setFontSize(10);
         doc.setFont('helvetica', 'bold');
-        doc.text('Crew-Besetzungen:', 20, anlagenY);
+        doc.text('Crew-Besetzungen:', 20, currentY);
         doc.setFont('helvetica', 'normal');
-        anlagenY += 6;
+        currentY += 6;
         
-        regattasWithCrew.forEach((r, i) => {
+        regattasWithCrew.forEach((r) => {
           const crewList = r.crew.map((c, idx) => {
             const vereinText = c.verein ? ` (${c.verein})` : '';
             return `${idx + 1}. ${c.name}${vereinText}`;
           }).join(', ');
           doc.setFontSize(9);
-          doc.text(`${r.regattaName}: ${crewList}`, 25, anlagenY, { maxWidth: 165 });
-          anlagenY += 8;
+          doc.text(`${r.regattaName}: ${crewList}`, 25, currentY, { maxWidth: 165 });
+          currentY += 8;
         });
       }
       
       // Unterschriften
-      const signY = Math.max(anlagenY + 20, 240);
+      const signY = Math.max(currentY + 20, 240);
       doc.setDrawColor(100);
       doc.line(20, signY, 85, signY);
       doc.line(115, signY, 180, signY);
-      
       doc.setFontSize(8);
-      doc.text('Ort, Datum, Unterschrift Antragsteller', 20, signY + 5);
+      doc.text('Ort, Datum, Unterschrift Antragsteller:in', 20, signY + 5);
       doc.text('Genehmigt (Vorstand)', 115, signY + 5);
       
       // Footer
@@ -1070,51 +1063,25 @@ function App() {
       doc.setTextColor(128);
       doc.text(`Erstellt am ${new Date().toLocaleDateString('de-DE')} um ${new Date().toLocaleTimeString('de-DE')}`, 105, 285, { align: 'center' });
       
-      // === ANHÄNGE: PDFs als Bilder einfügen ===
-      let pageNum = 1;
+      console.log('PDF erstellt, starte Download...');
       
-      for (const attachment of pdfAttachments) {
-        // Ergebnisliste
-        if (attachment.resultPdf) {
-          try {
-            doc.addPage();
-            pageNum++;
-            doc.setFontSize(10);
-            doc.setFont('helvetica', 'bold');
-            doc.setTextColor(0);
-            doc.text(`Anlage ${pageNum - 1}a: Ergebnisliste - ${attachment.regattaName}`, 20, 15);
-            doc.setFont('helvetica', 'normal');
-            doc.setFontSize(8);
-            doc.setTextColor(128);
-            doc.text('(Original-PDF als separate Datei beigefügt)', 20, 22);
-          } catch (e) {
-            console.error('Error adding result PDF:', e);
-          }
-        }
-        
-        // Rechnung
-        if (attachment.invoicePdf) {
-          try {
-            doc.addPage();
-            pageNum++;
-            doc.setFontSize(10);
-            doc.setFont('helvetica', 'bold');
-            doc.setTextColor(0);
-            doc.text(`Anlage ${pageNum - 1}b: Rechnung - ${attachment.regattaName}`, 20, 15);
-            doc.setFont('helvetica', 'normal');
-            doc.setFontSize(8);
-            doc.setTextColor(128);
-            doc.text('(Original-PDF als separate Datei beigefügt)', 20, 22);
-          } catch (e) {
-            console.error('Error adding invoice PDF:', e);
-          }
-        }
-      }
-      
+      // Download über Blob (robuster)
+      const pdfBlob = doc.output('blob');
       const filename = `TSC_Erstattungsantrag_${boatData.seglername?.replace(/\s/g, '_') || 'Antrag'}_${new Date().toISOString().slice(0,10)}.pdf`;
-      doc.save(filename);
-      setSuccess('PDF-Antrag wurde erstellt');
-      return doc;
+      
+      const url = URL.createObjectURL(pdfBlob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      link.style.display = 'none';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      
+      console.log('PDF Download gestartet:', filename);
+      setSuccess('PDF-Antrag wurde erstellt: ' + filename);
+      return pdfBlob;
       
     } catch (err) {
       console.error('PDF Error:', err);
@@ -1124,30 +1091,46 @@ function App() {
   };
 
   // === ALLE DOKUMENTE HERUNTERLADEN ===
-  const downloadAllDocuments = () => {
+  const downloadAllDocuments = async () => {
+    console.log('downloadAllDocuments aufgerufen');
+    
+    if (regatten.length === 0) {
+      setError('Keine Regatten vorhanden - bitte erst Regatten hinzufügen');
+      return;
+    }
+    
     try {
-      // 1. Gesamtantrag
+      setSuccess('Downloads werden vorbereitet...');
+      
+      // 1. Gesamtantrag PDF
       generatePDF();
+      
+      // Kurze Verzögerung zwischen Downloads (Browser-Schutz)
+      await new Promise(resolve => setTimeout(resolve, 500));
       
       // 2. CSV
       generateCSV();
       
-      // 3. Original-PDFs einzeln herunterladen
-      pdfAttachments.forEach((attachment, index) => {
+      // 3. Original-PDFs einzeln herunterladen (mit Verzögerung)
+      for (let index = 0; index < pdfAttachments.length; index++) {
+        const attachment = pdfAttachments[index];
         const regattaName = attachment.regattaName?.replace(/[^a-zA-Z0-9äöüÄÖÜß]/g, '_') || `Regatta_${index + 1}`;
         
         if (attachment.resultPdf) {
+          await new Promise(resolve => setTimeout(resolve, 300));
           const blob = base64ToBlob(attachment.resultPdf, 'application/pdf');
           downloadBlob(blob, `${index + 1}_Ergebnis_${regattaName}.pdf`);
         }
         
         if (attachment.invoicePdf) {
+          await new Promise(resolve => setTimeout(resolve, 300));
           const blob = base64ToBlob(attachment.invoicePdf, 'application/pdf');
           downloadBlob(blob, `${index + 1}_Rechnung_${regattaName}.pdf`);
         }
-      });
+      }
       
-      setSuccess(`${2 + pdfAttachments.length * 2} Dateien werden heruntergeladen`);
+      const totalFiles = 2 + pdfAttachments.filter(a => a.resultPdf).length + pdfAttachments.filter(a => a.invoicePdf).length;
+      setSuccess(`${totalFiles} Dateien wurden heruntergeladen`);
       
     } catch (err) {
       console.error('Download Error:', err);
@@ -1179,6 +1162,8 @@ function App() {
 
   // === CSV EXPORT (Ein Buchungssatz) ===
   const generateCSV = () => {
+    console.log('generateCSV aufgerufen, regatten:', regatten.length);
+    
     if (regatten.length === 0) {
       setError('Keine Regatten vorhanden - bitte erst Regatten hinzufügen');
       return;
@@ -1206,16 +1191,23 @@ function App() {
         row.map(cell => `"${(cell || '').toString().replace(/"/g, '""')}"`).join(';')
       ].join('\n');
       
+      console.log('CSV erstellt, starte Download...');
+      
       const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' });
+      const filename = `TSC_Buchungssatz_${boatData.seglername?.replace(/\s/g, '_') || 'Export'}_${new Date().toISOString().slice(0,10)}.csv`;
+      
       const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `TSC_Buchungssatz_${boatData.seglername?.replace(/\s/g, '_') || 'Export'}_${new Date().toISOString().slice(0,10)}.csv`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      setTimeout(() => URL.revokeObjectURL(url), 100);
-      setSuccess('CSV-Buchungssatz wurde erstellt');
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      link.style.display = 'none';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      
+      console.log('CSV Download gestartet:', filename);
+      setSuccess('CSV-Buchungssatz wurde erstellt: ' + filename);
       
     } catch (err) {
       console.error('CSV Error:', err);
