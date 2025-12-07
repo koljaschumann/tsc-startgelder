@@ -386,6 +386,18 @@ function App() {
   const [adminPassword, setAdminPassword] = useState('');
   const [adminAuthenticated, setAdminAuthenticated] = useState(false);
   
+  // Regatta bearbeiten
+  const [editingRegatta, setEditingRegatta] = useState(null);
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [editForm, setEditForm] = useState({
+    regattaName: '',
+    date: '',
+    placement: '',
+    totalParticipants: '',
+    raceCount: '',
+    invoiceAmount: ''
+  });
+  
   // Admin-Passwort (kann hier geändert werden)
   const ADMIN_PASSWORD = 'TSC2025!';
   
@@ -855,34 +867,66 @@ function App() {
       }
       
       // === ALLE TEILNEHMER ZÄHLEN ===
-      // Suche nach allen Zeilen die wie Ergebniszeilen aussehen
-      // Pattern: Zahl am Anfang, gefolgt von Segelnummer
+      // Bei Bug.Nr.-Format: Nur erste Zahl am Zeilenanfang zählt
+      // Bei Manage2Sail: Zahl vor Ländercode zählt
       
       for (const line of lines) {
-        // Suche nach Mustern: "Zahl ... GER/AUT/etc Zahl" oder "Zahl ... Zahl (4-5 stellig)"
-        const participantMatch = line.match(/^\s*(\d{1,3})\s+.*?(?:([A-Z]{2,3})\s*)?(\d{4,6})\b/);
-        if (participantMatch) {
-          const rank = parseInt(participantMatch[1]);
-          if (rank > 0 && rank <= 300) {
-            const sailNum = (participantMatch[2] || 'GER') + participantMatch[3];
-            if (!allParticipants.find(p => p.sailNumber === sailNum)) {
-              allParticipants.push({ rank, sailNumber: sailNum });
+        if (hasBugNr) {
+          // Bug.Nr. Format: Erste Zahl am Zeilenanfang ist die Platzierung
+          // Format: "143   93   GER 13162   Name"
+          const bugNrMatch = line.match(/^\s*(\d{1,3})\s+\d+\s+(?:[A-Z]{2,3}\s*)?(\d{4,6})\b/);
+          if (bugNrMatch) {
+            const rank = parseInt(bugNrMatch[1]);
+            if (rank > 0 && rank <= 300) {
+              const sailNum = 'GER' + bugNrMatch[2];
+              if (!allParticipants.find(p => p.sailNumber === sailNum)) {
+                allParticipants.push({ rank, sailNumber: sailNum });
+              }
+            }
+          } else {
+            // Fallback: Einfach erste Zahl am Zeilenanfang wenn Segelnummer in Zeile
+            const simpleMatch = line.match(/^\s*(\d{1,3})\b/);
+            if (simpleMatch && /\d{4,6}/.test(line)) {
+              const rank = parseInt(simpleMatch[1]);
+              if (rank > 0 && rank <= 300) {
+                const sailMatch = line.match(/(\d{4,6})/);
+                if (sailMatch) {
+                  const sailNum = 'GER' + sailMatch[1];
+                  if (!allParticipants.find(p => p.sailNumber === sailNum)) {
+                    allParticipants.push({ rank, sailNumber: sailNum });
+                  }
+                }
+              }
             }
           }
-        }
-        
-        // Alternative: Manage2Sail Format
-        const m2sMatch = line.match(/\b(\d{1,3})\s+([A-Z]{2,3})\s*(\d{3,6})\b/);
-        if (m2sMatch) {
-          const rank = parseInt(m2sMatch[1]);
-          if (rank > 0 && rank <= 300) {
-            const sailNum = m2sMatch[2] + m2sMatch[3];
-            if (!allParticipants.find(p => p.sailNumber === sailNum)) {
-              allParticipants.push({ rank, sailNumber: sailNum });
+        } else {
+          // Standard/Manage2Sail Format: Zahl direkt vor Ländercode
+          const participantMatch = line.match(/^\s*(\d{1,3})\s+.*?(?:([A-Z]{2,3})\s*)?(\d{4,6})\b/);
+          if (participantMatch) {
+            const rank = parseInt(participantMatch[1]);
+            if (rank > 0 && rank <= 300) {
+              const sailNum = (participantMatch[2] || 'GER') + participantMatch[3];
+              if (!allParticipants.find(p => p.sailNumber === sailNum)) {
+                allParticipants.push({ rank, sailNumber: sailNum });
+              }
+            }
+          }
+          
+          // Alternative: Manage2Sail Format "Rang Ländercode Segelnummer"
+          const m2sMatch = line.match(/\b(\d{1,3})\s+([A-Z]{2,3})\s*(\d{3,6})\b/);
+          if (m2sMatch) {
+            const rank = parseInt(m2sMatch[1]);
+            if (rank > 0 && rank <= 300) {
+              const sailNum = m2sMatch[2] + m2sMatch[3];
+              if (!allParticipants.find(p => p.sailNumber === sailNum)) {
+                allParticipants.push({ rank, sailNumber: sailNum });
+              }
             }
           }
         }
       }
+      
+      console.log('Gefundene Teilnehmer:', allParticipants.length, hasBugNr ? '(Bug.Nr. Format)' : '(Standard Format)');
       
       // Gesamtteilnehmer = höchste eindeutige Platzierung
       if (allParticipants.length > 0) {
@@ -1220,6 +1264,82 @@ function App() {
   };
 
   // ============================================
+  // REGATTA BEARBEITEN
+  // ============================================
+  const startEditRegatta = (regatta) => {
+    setEditingRegatta(regatta);
+    setEditForm({
+      regattaName: regatta.regattaName || '',
+      date: regatta.date || '',
+      placement: regatta.placement?.toString() || '',
+      totalParticipants: regatta.totalParticipants?.toString() || '',
+      raceCount: regatta.raceCount?.toString() || '',
+      invoiceAmount: regatta.invoiceAmount?.toString() || ''
+    });
+    setShowEditModal(true);
+  };
+
+  const saveEditRegatta = () => {
+    if (!editingRegatta) return;
+    
+    if (!editForm.regattaName.trim()) {
+      setError('Bitte Regattanamen eingeben');
+      return;
+    }
+    
+    if (!editForm.placement || parseInt(editForm.placement) <= 0) {
+      setError('Bitte gültige Platzierung eingeben');
+      return;
+    }
+    
+    if (!editForm.invoiceAmount || parseFloat(editForm.invoiceAmount) <= 0) {
+      setError('Bitte gültigen Rechnungsbetrag eingeben');
+      return;
+    }
+    
+    setRegatten(prev => prev.map(r => {
+      if (r.id === editingRegatta.id) {
+        return {
+          ...r,
+          regattaName: editForm.regattaName.trim(),
+          date: editForm.date || r.date,
+          placement: parseInt(editForm.placement),
+          totalParticipants: parseInt(editForm.totalParticipants) || r.totalParticipants,
+          raceCount: parseInt(editForm.raceCount) || r.raceCount,
+          invoiceAmount: parseFloat(editForm.invoiceAmount.replace(',', '.')),
+          editedAt: new Date().toISOString()
+        };
+      }
+      return r;
+    }));
+    
+    // PDF-Anhänge auch aktualisieren (für den Regattanamen)
+    setPdfAttachments(prev => prev.map(att => {
+      if (att.regattaId === editingRegatta.id) {
+        return { ...att, regattaName: editForm.regattaName.trim() };
+      }
+      return att;
+    }));
+    
+    setShowEditModal(false);
+    setEditingRegatta(null);
+    setSuccess('Regatta aktualisiert!');
+  };
+
+  const cancelEditRegatta = () => {
+    setShowEditModal(false);
+    setEditingRegatta(null);
+    setEditForm({
+      regattaName: '',
+      date: '',
+      placement: '',
+      totalParticipants: '',
+      raceCount: '',
+      invoiceAmount: ''
+    });
+  };
+
+  // ============================================
   // CREW MANAGEMENT
   // ============================================
   const addCrewMember = (member) => {
@@ -1275,78 +1395,85 @@ function App() {
     try {
       const doc = new jsPDF();
       
-      // Header
-      doc.setFontSize(20);
-      doc.setFont('helvetica', 'bold');
-      doc.text('Antrag auf Startgeld-Erstattung', 105, 20, { align: 'center' });
+      // Regatten nach Datum sortieren (aufsteigend)
+      const sortedRegatten = [...regatten].sort((a, b) => {
+        if (!a.date && !b.date) return 0;
+        if (!a.date) return 1;
+        if (!b.date) return -1;
+        return new Date(a.date) - new Date(b.date);
+      });
       
-      doc.setFontSize(11);
+      // Header
+      doc.setFontSize(18);
+      doc.setFont('helvetica', 'bold');
+      doc.text('Antrag auf Erstattung von Startgeldern', 105, 20, { align: 'center' });
+      
+      doc.setFontSize(12);
       doc.setFont('helvetica', 'normal');
       doc.text(`Tegeler Segel-Club e.V. - Saison ${currentSeason}`, 105, 28, { align: 'center' });
       
-      // Antragsteller Box
-      doc.setFillColor(248, 250, 252);
-      doc.rect(20, 35, 170, 30, 'F');
-      doc.setDrawColor(200, 200, 200);
-      doc.rect(20, 35, 170, 30, 'S');
-      
-      doc.setFontSize(12);
-      doc.setFont('helvetica', 'bold');
-      doc.text('Antragsteller:in', 25, 43);
-      
+      // Antragsteller-Daten
       doc.setFontSize(10);
-      doc.setFont('helvetica', 'normal');
-      doc.text(`Name: ${boatData.seglername || '-'}`, 25, 51);
-      doc.text(`Segelnummer: ${boatData.segelnummer || '-'}`, 25, 57);
-      doc.text(`IBAN: ${boatData.iban || '-'}`, 110, 51);
-      doc.text(`Kontoinhaber:in: ${boatData.kontoinhaber || '-'}`, 110, 57);
-      
-      // Tabelle
-      doc.setFontSize(12);
       doc.setFont('helvetica', 'bold');
-      doc.text('Regatten', 20, 75);
+      doc.text('Antragsteller:', 20, 45);
+      doc.setFont('helvetica', 'normal');
+      doc.text(`Name: ${boatData.seglername || '-'}`, 20, 52);
+      doc.text(`Segelnummer: ${boatData.segelnummer || '-'}`, 20, 58);
+      doc.text(`Bootsklasse: ${boatData.bootsklasse || '-'}`, 20, 64);
+      
+      // Bankverbindung
+      doc.setFont('helvetica', 'bold');
+      doc.text('Bankverbindung:', 110, 45);
+      doc.setFont('helvetica', 'normal');
+      doc.text(`IBAN: ${boatData.iban || '-'}`, 110, 52);
+      doc.text(`Kontoinhaber: ${boatData.kontoinhaber || boatData.seglername || '-'}`, 110, 58);
+      
+      // Tabelle mit sortierten Regatten
+      const tableData = sortedRegatten.map((r, i) => [
+        i + 1,
+        r.regattaName || '-',
+        r.date ? new Date(r.date).toLocaleDateString('de-DE') : '-',
+        `${r.placement || '-'}. / ${r.totalParticipants || '-'}`,
+        r.raceCount || '-',
+        r.crew?.length > 0 ? r.crew.map(c => c.name).join(', ') : '-',
+        `${(r.invoiceAmount || 0).toFixed(2)} €`
+      ]);
       
       if (typeof doc.autoTable === 'function') {
         doc.autoTable({
-          startY: 80,
-          head: [['Nr.', 'Regatta', 'Datum', 'Platz', 'Teiln.', 'Wettf.', 'Betrag']],
-          body: regatten.map((r, i) => [
-            (i + 1).toString(),
-            r.regattaName || '-',
-            r.date ? new Date(r.date).toLocaleDateString('de-DE') : '-',
-            r.placement ? `${r.placement}.` : '-',
-            r.totalParticipants || '-',
-            r.raceCount || '-',
-            `${r.invoiceAmount?.toFixed(2) || '0.00'} €`
-          ]),
-          foot: [['', '', '', '', '', 'Gesamt:', `${totalAmount.toFixed(2)} €`]],
-          theme: 'grid',
-          headStyles: { fillColor: [99, 102, 241], fontStyle: 'bold' },
-          footStyles: { fillColor: [16, 185, 129], textColor: [255, 255, 255] },
-          styles: { fontSize: 9 },
+          startY: 75,
+          head: [['#', 'Regatta', 'Datum', 'Platz', 'WF', 'Crew', 'Betrag']],
+          body: tableData,
+          theme: 'striped',
+          headStyles: { fillColor: [100, 80, 180] },
+          styles: { fontSize: 8 },
+          columnStyles: {
+            0: { cellWidth: 8 },
+            1: { cellWidth: 50 },
+            2: { cellWidth: 22 },
+            3: { cellWidth: 20 },
+            4: { cellWidth: 12 },
+            5: { cellWidth: 45 },
+            6: { cellWidth: 20 },
+          }
         });
       }
       
-      // Crew-Details
-      const afterY = doc.lastAutoTable?.finalY || 150;
-      const regattasWithCrew = regatten.filter(r => r.crew?.length > 0);
-      if (regattasWithCrew.length > 0) {
-        doc.setFontSize(10);
-        doc.setFont('helvetica', 'bold');
-        doc.text('Crew-Besetzungen:', 20, afterY + 15);
-        doc.setFont('helvetica', 'normal');
-        let y = afterY + 22;
-        regattasWithCrew.forEach(r => {
-          const crewText = r.crew.map(c => `${c.name} (${c.verein || 'k.A.'})`).join(', ');
-          doc.text(`${r.regattaName}: ${crewText}`, 25, y, { maxWidth: 165 });
-          y += 7;
-        });
-      }
+      // Summe
+      const finalY = doc.lastAutoTable?.finalY + 10 || 150;
+      doc.setFont('helvetica', 'bold');
+      doc.text(`Gesamtbetrag: ${totalAmount.toFixed(2)} €`, 20, finalY);
+      
+      // Unterschrift
+      doc.setFont('helvetica', 'normal');
+      doc.text(`Datum: ${new Date().toLocaleDateString('de-DE')}`, 20, finalY + 20);
+      doc.line(110, finalY + 20, 190, finalY + 20);
+      doc.text('Unterschrift', 150, finalY + 25, { align: 'center' });
       
       // Footer
       doc.setFontSize(8);
       doc.setTextColor(128);
-      doc.text(`Erstellt: ${new Date().toLocaleString('de-DE')}`, 105, 285, { align: 'center' });
+      doc.text('Erstellt mit TSC Startgeld App', 105, 285, { align: 'center' });
       
       // Download
       const blob = doc.output('blob');
@@ -1551,6 +1678,14 @@ function App() {
     return new Promise((resolve) => {
       const doc = new jsPDF();
       
+      // Regatten nach Datum sortieren (aufsteigend)
+      const sortedRegatten = [...regatten].sort((a, b) => {
+        if (!a.date && !b.date) return 0;
+        if (!a.date) return 1;
+        if (!b.date) return -1;
+        return new Date(a.date) - new Date(b.date);
+      });
+      
       // Header
       doc.setFontSize(18);
       doc.setFont('helvetica', 'bold');
@@ -1576,8 +1711,8 @@ function App() {
       doc.text(`IBAN: ${boatData.iban || '-'}`, 110, 52);
       doc.text(`Kontoinhaber: ${boatData.kontoinhaber || boatData.seglername}`, 110, 58);
       
-      // Tabelle
-      const tableData = regatten.map((r, i) => [
+      // Tabelle mit sortierten Regatten
+      const tableData = sortedRegatten.map((r, i) => [
         i + 1,
         r.regattaName || '-',
         r.date ? new Date(r.date).toLocaleDateString('de-DE') : '-',
@@ -2433,11 +2568,19 @@ function App() {
                         <div className="flex items-center gap-3 flex-shrink-0 ml-3">
                           <span className={`text-lg font-semibold ${isDark ? 'text-emerald-400' : 'text-emerald-600'}`}>{r.invoiceAmount?.toFixed(2)} €</span>
                           <button
+                            onClick={() => startEditRegatta(r)}
+                            className={`w-8 h-8 rounded-lg ${isDark ? 'bg-violet-500/10 text-violet-400 hover:bg-violet-500/20' : 'bg-violet-100 text-violet-600 hover:bg-violet-200'} flex items-center justify-center`}
+                            title="Bearbeiten"
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
+                          </button>
+                          <button
                             onClick={() => {
                               setRegatten(prev => prev.filter(reg => reg.id !== r.id));
                               setPdfAttachments(prev => prev.filter(a => a.regattaId !== r.id));
                             }}
                             className="w-8 h-8 rounded-lg bg-red-500/10 text-red-500 hover:bg-red-500/20 flex items-center justify-center"
+                            title="Löschen"
                           >
                             {Icons.x}
                           </button>
@@ -2730,6 +2873,96 @@ function App() {
             >
               Speichern
             </button>
+          </div>
+        </Modal>
+        
+        {/* Regatta bearbeiten Modal */}
+        <Modal isOpen={showEditModal} onClose={cancelEditRegatta} title="Regatta bearbeiten">
+          <div className="space-y-4">
+            <div>
+              <label className={`block text-sm mb-2 ${isDark ? 'text-slate-400' : 'text-slate-600'}`}>Regattaname *</label>
+              <input
+                type="text"
+                value={editForm.regattaName}
+                onChange={(e) => setEditForm(prev => ({ ...prev, regattaName: e.target.value }))}
+                className={`w-full px-4 py-3 rounded-xl ${isDark ? 'bg-slate-800 border-slate-700 text-white' : 'bg-white border-slate-200 text-slate-900'} border focus:outline-none focus:ring-2 focus:ring-violet-500`}
+                placeholder="Name der Regatta"
+              />
+            </div>
+            
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className={`block text-sm mb-2 ${isDark ? 'text-slate-400' : 'text-slate-600'}`}>Datum</label>
+                <input
+                  type="date"
+                  value={editForm.date}
+                  onChange={(e) => setEditForm(prev => ({ ...prev, date: e.target.value }))}
+                  className={`w-full px-4 py-3 rounded-xl ${isDark ? 'bg-slate-800 border-slate-700 text-white' : 'bg-white border-slate-200 text-slate-900'} border focus:outline-none focus:ring-2 focus:ring-violet-500`}
+                />
+              </div>
+              <div>
+                <label className={`block text-sm mb-2 ${isDark ? 'text-slate-400' : 'text-slate-600'}`}>Platzierung *</label>
+                <input
+                  type="number"
+                  value={editForm.placement}
+                  onChange={(e) => setEditForm(prev => ({ ...prev, placement: e.target.value }))}
+                  className={`w-full px-4 py-3 rounded-xl ${isDark ? 'bg-slate-800 border-slate-700 text-white' : 'bg-white border-slate-200 text-slate-900'} border focus:outline-none focus:ring-2 focus:ring-violet-500`}
+                  placeholder="z.B. 5"
+                  min="1"
+                />
+              </div>
+            </div>
+            
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className={`block text-sm mb-2 ${isDark ? 'text-slate-400' : 'text-slate-600'}`}>Anzahl Teilnehmer</label>
+                <input
+                  type="number"
+                  value={editForm.totalParticipants}
+                  onChange={(e) => setEditForm(prev => ({ ...prev, totalParticipants: e.target.value }))}
+                  className={`w-full px-4 py-3 rounded-xl ${isDark ? 'bg-slate-800 border-slate-700 text-white' : 'bg-white border-slate-200 text-slate-900'} border focus:outline-none focus:ring-2 focus:ring-violet-500`}
+                  placeholder="z.B. 45"
+                  min="1"
+                />
+              </div>
+              <div>
+                <label className={`block text-sm mb-2 ${isDark ? 'text-slate-400' : 'text-slate-600'}`}>Wettfahrten</label>
+                <input
+                  type="number"
+                  value={editForm.raceCount}
+                  onChange={(e) => setEditForm(prev => ({ ...prev, raceCount: e.target.value }))}
+                  className={`w-full px-4 py-3 rounded-xl ${isDark ? 'bg-slate-800 border-slate-700 text-white' : 'bg-white border-slate-200 text-slate-900'} border focus:outline-none focus:ring-2 focus:ring-violet-500`}
+                  placeholder="z.B. 6"
+                  min="1"
+                />
+              </div>
+            </div>
+            
+            <div>
+              <label className={`block text-sm mb-2 ${isDark ? 'text-slate-400' : 'text-slate-600'}`}>Rechnungsbetrag (€) *</label>
+              <input
+                type="text"
+                value={editForm.invoiceAmount}
+                onChange={(e) => setEditForm(prev => ({ ...prev, invoiceAmount: e.target.value }))}
+                className={`w-full px-4 py-3 rounded-xl ${isDark ? 'bg-slate-800 border-slate-700 text-white' : 'bg-white border-slate-200 text-slate-900'} border focus:outline-none focus:ring-2 focus:ring-violet-500`}
+                placeholder="z.B. 45,00"
+              />
+            </div>
+            
+            <div className="flex gap-3 pt-2">
+              <button
+                onClick={cancelEditRegatta}
+                className={`flex-1 py-3 rounded-xl font-medium ${isDark ? 'bg-slate-700 text-slate-300 hover:bg-slate-600' : 'bg-slate-200 text-slate-700 hover:bg-slate-300'}`}
+              >
+                Abbrechen
+              </button>
+              <button
+                onClick={saveEditRegatta}
+                className="flex-1 py-3 rounded-xl bg-violet-600 text-white font-medium hover:bg-violet-500"
+              >
+                Speichern
+              </button>
+            </div>
           </div>
         </Modal>
         
