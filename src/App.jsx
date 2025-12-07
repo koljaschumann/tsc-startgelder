@@ -550,27 +550,40 @@ function App() {
       setOcrProgress({ status: 'OCR wird gestartet...' });
       const loadingTask = pdfjsLib.getDocument({ data: atob(pdfData) });
       const pdf = await loadingTask.promise;
-      const page = await pdf.getPage(1);
-      const scale = 2.0;
-      const viewport = page.getViewport({ scale });
       
-      const canvas = document.createElement('canvas');
-      const context = canvas.getContext('2d');
-      canvas.height = viewport.height;
-      canvas.width = viewport.width;
+      let fullText = '';
+      console.log(`OCR: PDF hat ${pdf.numPages} Seiten`);
       
-      await page.render({ canvasContext: context, viewport }).promise;
-      
-      setOcrProgress({ status: 'Texterkennung läuft...' });
-      const result = await Tesseract.recognize(canvas, 'deu+eng', {
-        logger: m => {
-          if (m.status === 'recognizing text') {
-            setOcrProgress({ status: `Erkenne Text... ${Math.round(m.progress * 100)}%` });
+      // ALLE Seiten verarbeiten
+      for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+        setOcrProgress({ status: `OCR Seite ${pageNum} von ${pdf.numPages}...` });
+        
+        const page = await pdf.getPage(pageNum);
+        const scale = 2.0;
+        const viewport = page.getViewport({ scale });
+        
+        const canvas = document.createElement('canvas');
+        const context = canvas.getContext('2d');
+        canvas.height = viewport.height;
+        canvas.width = viewport.width;
+        
+        await page.render({ canvasContext: context, viewport }).promise;
+        
+        setOcrProgress({ status: `Texterkennung Seite ${pageNum}/${pdf.numPages}...` });
+        const result = await Tesseract.recognize(canvas, 'deu+eng', {
+          logger: m => {
+            if (m.status === 'recognizing text') {
+              const pageProgress = ((pageNum - 1) / pdf.numPages + m.progress / pdf.numPages) * 100;
+              setOcrProgress({ status: `Seite ${pageNum}/${pdf.numPages}: ${Math.round(m.progress * 100)}%` });
+            }
           }
-        }
-      });
+        });
+        
+        fullText += result.data.text + '\n--- Seite ' + pageNum + ' Ende ---\n';
+      }
       
-      return result.data.text;
+      console.log('OCR komplett, Text-Länge:', fullText.length);
+      return fullText;
     } catch (err) {
       console.error('OCR Error:', err);
       return null;
