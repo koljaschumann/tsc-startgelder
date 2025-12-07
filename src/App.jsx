@@ -896,6 +896,11 @@ function App() {
     
     setPdfProcessing(true);
     setParsingFeedback(null);
+    // Manuelle Felder zurücksetzen
+    setManualRegattaName('');
+    setManualPlacement('');
+    setManualTotalParticipants('');
+    setManualRaceCount('');
     
     try {
       const reader = new FileReader();
@@ -916,7 +921,7 @@ function App() {
         
         if (text) {
           setDebugText(text.slice(0, 1000));
-          const result = parseRegattaPDF(text, boatData.segelnummer);
+          let result = parseRegattaPDF(text, boatData.segelnummer);
           
           // Wenn keine Platzierung und noch kein OCR -> OCR versuchen
           if (!result.participant && !useOCR) {
@@ -924,25 +929,29 @@ function App() {
             const ocrText = await performOCR(base64);
             if (ocrText) {
               const ocrResult = parseRegattaPDF(ocrText, boatData.segelnummer);
-              if (ocrResult.participant) {
-                setPdfResult(ocrResult);
-                setParserUsed(ocrResult.strategy + ' (OCR)');
-                setParsingFeedback(null);
-                setPdfProcessing(false);
-                setOcrProgress(null);
-                setAddStep(maxCrew > 1 ? 1 : 2);
-                return;
+              if (ocrResult.participant || ocrResult.regattaName) {
+                result = ocrResult;
+                useOCR = true;
               }
             }
           }
           
+          // Ergebnis setzen
           setPdfResult(result);
           setParserUsed(result.strategy + (useOCR ? ' (OCR)' : ''));
           setParsingFeedback(result.feedback);
           
-          if (result.participant) {
-            setAddStep(maxCrew > 1 ? 1 : 2);
-          }
+          // Erkannte Werte in die manuellen Felder übertragen (zur Korrektur)
+          if (result.regattaName) setManualRegattaName(result.regattaName);
+          if (result.participant?.rank) setManualPlacement(result.participant.rank.toString());
+          if (result.totalParticipants) setManualTotalParticipants(result.totalParticipants.toString());
+          if (result.raceCount) setManualRaceCount(result.raceCount.toString());
+          
+          // NICHT automatisch zum nächsten Step springen - Benutzer soll korrigieren können
+        } else {
+          // Auch ohne Text ein leeres Ergebnis setzen, damit Korrekturfelder erscheinen
+          setPdfResult({ success: false, feedback: 'Kein Text aus PDF extrahiert' });
+          setParsingFeedback('Kein Text aus PDF extrahiert. Bitte die Daten manuell eingeben.');
         }
         
         setPdfProcessing(false);
@@ -1047,10 +1056,11 @@ function App() {
         return;
       }
       
-      const placement = manualPlacement ? parseInt(manualPlacement) : pdfResult?.participant?.rank;
-      const totalParticipants = manualTotalParticipants ? parseInt(manualTotalParticipants) : pdfResult?.totalParticipants;
-      const raceCount = manualRaceCount ? parseInt(manualRaceCount) : pdfResult?.raceCount;
-      const regattaName = manualRegattaName.trim() || pdfResult?.regattaName || '';
+      // Manuelle Werte haben Vorrang (sie enthalten ggf. die erkannten Werte als Default)
+      const placement = manualPlacement ? parseInt(manualPlacement) : null;
+      const totalParticipants = manualTotalParticipants ? parseInt(manualTotalParticipants) : null;
+      const raceCount = manualRaceCount ? parseInt(manualRaceCount) : null;
+      const regattaName = manualRegattaName.trim();
       
       if (!placement) {
         setError('Bitte Platzierung eingeben');
@@ -1077,8 +1087,8 @@ function App() {
         }
       }
       
-      // Lernfunktion aufrufen wenn manuell korrigiert
-      if (manualPlacement || manualTotalParticipants) {
+      // Lernfunktion aufrufen wenn Daten vorhanden
+      if (pdfResult && debugText) {
         learnFromCorrection(pdfResult, { placement, totalParticipants });
       }
       
@@ -1090,11 +1100,11 @@ function App() {
         placement,
         totalParticipants: totalParticipants || 0,
         raceCount: raceCount || 0,
-        sailorName: pdfResult?.participant?.name || boatData.seglername,
+        sailorName: boatData.seglername,
         crew: selectedCrew,
         invoiceAmount: amount,
         addedAt: new Date().toISOString(),
-        parserUsed: parserUsed,
+        parserUsed: parserUsed || 'Manuell',
       };
       
       // PDF-Anhänge speichern
@@ -1787,55 +1797,90 @@ function App() {
                     </div>
                   )}
                   
-                  {/* Manuelle Korrektur */}
-                  {pdfResult && (
+                  {/* Manuelle Eingabe / Korrektur - IMMER anzeigen nach Upload */}
+                  {(pdfResult || currentPdfData) && (
                     <div className={`mt-6 p-4 rounded-xl ${isDark ? 'bg-slate-800/50' : 'bg-slate-100'}`}>
-                      <div className={`text-sm mb-4 ${isDark ? 'text-slate-400' : 'text-slate-600'}`}>Daten korrigieren:</div>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                        <div>
+                      <div className={`text-sm mb-4 font-medium ${isDark ? 'text-slate-300' : 'text-slate-700'}`}>
+                        {pdfResult?.participant?.rank ? 'Erkannte Daten prüfen/korrigieren:' : 'Daten manuell eingeben:'}
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div className="sm:col-span-2">
                           <label className={`block text-xs mb-1 ${isDark ? 'text-slate-500' : 'text-slate-500'}`}>Regattaname *</label>
                           <input
                             type="text"
-                            value={manualRegattaName || pdfResult.regattaName || ''}
+                            value={manualRegattaName}
                             onChange={(e) => setManualRegattaName(e.target.value)}
-                            className={`w-full px-3 py-2 rounded-lg text-sm ${isDark ? 'bg-slate-700 border-slate-600 text-white' : 'bg-white border-slate-300 text-slate-900'} border focus:outline-none focus:ring-2 focus:ring-violet-500`}
+                            placeholder="z.B. Berliner Meisterschaft 2025"
+                            className={`w-full px-3 py-2 rounded-lg text-sm ${isDark ? 'bg-slate-700 border-slate-600 text-white placeholder-slate-500' : 'bg-white border-slate-300 text-slate-900 placeholder-slate-400'} border focus:outline-none focus:ring-2 focus:ring-violet-500`}
                           />
                         </div>
                         <div>
                           <label className={`block text-xs mb-1 ${isDark ? 'text-slate-500' : 'text-slate-500'}`}>Platzierung *</label>
                           <input
                             type="number"
-                            value={manualPlacement || pdfResult.participant?.rank || ''}
+                            min="1"
+                            value={manualPlacement}
                             onChange={(e) => setManualPlacement(e.target.value)}
-                            className={`w-full px-3 py-2 rounded-lg text-sm ${isDark ? 'bg-slate-700 border-slate-600 text-white' : 'bg-white border-slate-300 text-slate-900'} border focus:outline-none focus:ring-2 focus:ring-violet-500`}
+                            placeholder="z.B. 5"
+                            className={`w-full px-3 py-2 rounded-lg text-sm ${isDark ? 'bg-slate-700 border-slate-600 text-white placeholder-slate-500' : 'bg-white border-slate-300 text-slate-900 placeholder-slate-400'} border focus:outline-none focus:ring-2 focus:ring-violet-500`}
                           />
                         </div>
                         <div>
-                          <label className={`block text-xs mb-1 ${isDark ? 'text-slate-500' : 'text-slate-500'}`}>Teilnehmer</label>
+                          <label className={`block text-xs mb-1 ${isDark ? 'text-slate-500' : 'text-slate-500'}`}>Anzahl Teilnehmer</label>
                           <input
                             type="number"
-                            value={manualTotalParticipants || pdfResult.totalParticipants || ''}
+                            min="1"
+                            value={manualTotalParticipants}
                             onChange={(e) => setManualTotalParticipants(e.target.value)}
-                            className={`w-full px-3 py-2 rounded-lg text-sm ${isDark ? 'bg-slate-700 border-slate-600 text-white' : 'bg-white border-slate-300 text-slate-900'} border focus:outline-none focus:ring-2 focus:ring-violet-500`}
+                            placeholder="z.B. 45"
+                            className={`w-full px-3 py-2 rounded-lg text-sm ${isDark ? 'bg-slate-700 border-slate-600 text-white placeholder-slate-500' : 'bg-white border-slate-300 text-slate-900 placeholder-slate-400'} border focus:outline-none focus:ring-2 focus:ring-violet-500`}
                           />
                         </div>
                         <div>
-                          <label className={`block text-xs mb-1 ${isDark ? 'text-slate-500' : 'text-slate-500'}`}>Wettfahrten</label>
+                          <label className={`block text-xs mb-1 ${isDark ? 'text-slate-500' : 'text-slate-500'}`}>Gewertete Wettfahrten</label>
                           <input
                             type="number"
-                            value={manualRaceCount || pdfResult.raceCount || ''}
+                            min="1"
+                            value={manualRaceCount}
                             onChange={(e) => setManualRaceCount(e.target.value)}
-                            className={`w-full px-3 py-2 rounded-lg text-sm ${isDark ? 'bg-slate-700 border-slate-600 text-white' : 'bg-white border-slate-300 text-slate-900'} border focus:outline-none focus:ring-2 focus:ring-violet-500`}
+                            placeholder="z.B. 6"
+                            className={`w-full px-3 py-2 rounded-lg text-sm ${isDark ? 'bg-slate-700 border-slate-600 text-white placeholder-slate-500' : 'bg-white border-slate-300 text-slate-900 placeholder-slate-400'} border focus:outline-none focus:ring-2 focus:ring-violet-500`}
                           />
+                        </div>
+                        <div>
+                          <label className={`block text-xs mb-1 ${isDark ? 'text-slate-500' : 'text-slate-500'}`}>Parser-Info</label>
+                          <div className={`px-3 py-2 rounded-lg text-sm ${isDark ? 'bg-slate-800 text-slate-400' : 'bg-slate-200 text-slate-600'}`}>
+                            {parserUsed || 'Manuell'}
+                          </div>
                         </div>
                       </div>
                       
                       <button
                         onClick={() => setAddStep(maxCrew > 1 ? 1 : 2)}
-                        disabled={!(manualPlacement || pdfResult.participant?.rank) || !(manualRegattaName || pdfResult.regattaName)}
-                        className="mt-4 w-full py-3 rounded-xl bg-violet-600 text-white font-medium hover:bg-violet-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                        disabled={!manualPlacement || !manualRegattaName}
+                        className="mt-4 w-full py-3 rounded-xl bg-violet-600 text-white font-medium hover:bg-violet-500 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                       >
                         Weiter {maxCrew > 1 ? 'zur Crew' : 'zur Rechnung'}
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
+                      </button>
+                    </div>
+                  )}
+                  
+                  {/* Manuelle Eingabe ohne PDF */}
+                  {!pdfResult && !currentPdfData && (
+                    <div className={`mt-4 text-center ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
+                      <div className="text-sm">oder</div>
+                      <button
+                        onClick={() => {
+                          setPdfResult({ success: false, manual: true });
+                          setManualRegattaName('');
+                          setManualPlacement('');
+                          setManualTotalParticipants('');
+                          setManualRaceCount('');
+                        }}
+                        className={`mt-2 text-sm ${isDark ? 'text-violet-400 hover:text-violet-300' : 'text-violet-600 hover:text-violet-500'}`}
+                      >
+                        Daten manuell eingeben (ohne PDF)
                       </button>
                     </div>
                   )}
