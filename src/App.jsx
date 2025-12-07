@@ -68,40 +68,137 @@ const GradientOrbs = () => (
   </div>
 );
 
-const GlassCard = ({ children, className = '', warning = false }) => (
+const GlassCard = ({ children, className = '', warning = false, onClick = null }) => (
   <div 
-    className={`relative rounded-2xl p-6 ${className}`}
+    className={`relative rounded-2xl p-6 ${className} ${onClick ? 'cursor-pointer' : ''}`}
     style={{
       background: warning ? 'linear-gradient(135deg, rgba(245,158,11,0.1) 0%, rgba(245,158,11,0.02) 100%)' : 'linear-gradient(135deg, rgba(255,255,255,0.05) 0%, rgba(255,255,255,0.02) 100%)',
       border: warning ? '1px solid rgba(245,158,11,0.3)' : '1px solid rgba(255,255,255,0.08)',
       boxShadow: '0 4px 24px rgba(0,0,0,0.2)',
     }}
+    onClick={onClick}
   >
     {children}
   </div>
 );
 
-const IconBadge = ({ children, color = 'purple' }) => {
+// Professionelle SVG Icons
+const Icons = {
+  boat: (
+    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 17h18M5 17l2-8h10l2 8M7 9V6a1 1 0 011-1h8a1 1 0 011 1v3M12 5V3" />
+    </svg>
+  ),
+  document: (
+    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+    </svg>
+  ),
+  upload: (
+    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+    </svg>
+  ),
+  list: (
+    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+    </svg>
+  ),
+  download: (
+    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+    </svg>
+  ),
+  send: (
+    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+    </svg>
+  ),
+  mail: (
+    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+    </svg>
+  ),
+  receipt: (
+    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 14l6-6m-5.5.5h.01m4.99 5h.01M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16l3.5-2 3.5 2 3.5-2 3.5 2z" />
+    </svg>
+  ),
+  users: (
+    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197m13.5-9a2.5 2.5 0 11-5 0 2.5 2.5 0 015 0z" />
+    </svg>
+  ),
+  chart: (
+    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+    </svg>
+  ),
+  table: (
+    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 10h18M3 14h18m-9-4v8m-7 0h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+    </svg>
+  ),
+  archive: (
+    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" />
+    </svg>
+  ),
+  check: (
+    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+    </svg>
+  ),
+  x: (
+    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+    </svg>
+  ),
+  plus: (
+    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+    </svg>
+  ),
+  info: (
+    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+    </svg>
+  ),
+  warning: (
+    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+    </svg>
+  ),
+  trophy: (
+    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
+    </svg>
+  ),
+};
+
+const IconBadge = ({ icon, children, color = 'slate' }) => {
   const colors = {
-    purple: 'from-violet-500/20 to-violet-600/10 border-violet-500/30',
-    cyan: 'from-cyan-500/20 to-cyan-600/10 border-cyan-500/30',
-    amber: 'from-amber-500/20 to-amber-600/10 border-amber-500/30',
-    emerald: 'from-emerald-500/20 to-emerald-600/10 border-emerald-500/30',
+    purple: 'bg-violet-500/10 text-violet-400 border-violet-500/20',
+    cyan: 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20',
+    amber: 'bg-amber-500/10 text-amber-400 border-amber-500/20',
+    emerald: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
+    red: 'bg-red-500/10 text-red-400 border-red-500/20',
+    slate: 'bg-slate-500/10 text-slate-400 border-slate-500/20',
   };
   return (
-    <div className={`w-10 h-10 rounded-xl bg-gradient-to-br ${colors[color]} border flex items-center justify-center text-lg`}>
-      {children}
+    <div className={`w-10 h-10 rounded-xl ${colors[color]} border flex items-center justify-center`}>
+      {icon || children}
     </div>
   );
 };
 
 const Toast = ({ message, type = 'info', onClose }) => {
   useEffect(() => { const t = setTimeout(onClose, 5000); return () => clearTimeout(t); }, [onClose]);
-  const colors = { info: 'bg-violet-500/20 border-violet-500/30 text-violet-300', success: 'bg-emerald-500/20 border-emerald-500/30 text-emerald-300', warning: 'bg-amber-500/20 border-amber-500/30 text-amber-300', error: 'bg-red-500/20 border-red-500/30 text-red-300' };
-  const icons = { info: 'ℹ️', success: '✓', warning: '⚠️', error: '✕' };
+  const colors = { info: 'bg-slate-800 border-slate-700 text-slate-200', success: 'bg-emerald-900/80 border-emerald-700 text-emerald-200', warning: 'bg-amber-900/80 border-amber-700 text-amber-200', error: 'bg-red-900/80 border-red-700 text-red-200' };
+  const icons = { info: Icons.info, success: Icons.check, warning: Icons.warning, error: Icons.x };
   return (
     <div className={`fixed bottom-4 right-4 z-50 px-4 py-3 rounded-xl border ${colors[type]} backdrop-blur-sm shadow-lg animate-slideUp`}>
-      <div className="flex items-center gap-3"><span>{icons[type]}</span><span>{message}</span><button onClick={onClose} className="ml-2 opacity-50 hover:opacity-100">✕</button></div>
+      <div className="flex items-center gap-3"><span className="w-5 h-5">{icons[type]}</span><span>{message}</span><button onClick={onClose} className="ml-2 opacity-50 hover:opacity-100">{Icons.x}</button></div>
       <style>{`@keyframes slideUp { from { transform: translateY(100%); opacity: 0; } to { transform: translateY(0); opacity: 1; } } .animate-slideUp { animation: slideUp 0.3s ease-out; }`}</style>
     </div>
   );
@@ -1272,7 +1369,7 @@ function App() {
       const result = await response.json();
       
       if (result.success) {
-        setSuccess('✅ Antrag erfolgreich eingereicht! Du erhältst eine Bestätigung per E-Mail.');
+        setSuccess('Antrag erfolgreich eingereicht! Du erhältst eine Bestätigung per E-Mail.');
         // Optional: Daten zurücksetzen
       } else {
         throw new Error(result.message || 'Einreichung fehlgeschlagen');
@@ -1373,25 +1470,28 @@ Erstellt mit TSC Startgeld-Erstattung App
               {totalAmount.toFixed(2).replace('.', ',')} €
             </div>
           )}
-          <button onClick={() => setShowHelpModal(true)} className="w-10 h-10 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/10" title="Hilfe">❓</button>
+          <button onClick={() => setShowHelpModal(true)} className="w-10 h-10 rounded-xl bg-slate-800/50 border border-slate-700/50 flex items-center justify-center text-slate-400 hover:text-white hover:bg-slate-700/50 transition-colors" title="Hilfe">
+            {Icons.info}
+          </button>
         </div>
       </nav>
 
       {/* Tab Navigation */}
       <div className="relative z-10 max-w-4xl mx-auto px-6">
-        <div className="flex gap-2 p-1 rounded-xl bg-white/5 border border-white/10 mb-6">
+        <div className="flex gap-1 p-1 rounded-xl bg-slate-800/50 border border-slate-700/50 mb-6">
           {[
-            { id: 'settings', icon: '⚙️', label: 'Bootsdaten' },
-            { id: 'add', icon: '➕', label: 'Hinzufügen' },
-            { id: 'list', icon: '📋', label: `Liste (${regatten.length})` },
-            { id: 'export', icon: '📤', label: 'Export' },
+            { id: 'settings', icon: Icons.boat, label: 'Bootsdaten' },
+            { id: 'add', icon: Icons.plus, label: 'Hinzufügen' },
+            { id: 'list', icon: Icons.list, label: `Liste (${regatten.length})` },
+            { id: 'export', icon: Icons.download, label: 'Export' },
           ].map(tab => (
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
-              className={`flex-1 py-3 px-4 rounded-lg text-sm font-medium transition-all ${activeTab === tab.id ? 'bg-violet-500 text-white shadow-lg shadow-violet-500/25' : 'text-slate-400 hover:text-white hover:bg-white/5'}`}
+              className={`flex-1 py-3 px-4 rounded-lg text-sm font-medium transition-all flex items-center justify-center gap-2 ${activeTab === tab.id ? 'bg-violet-600 text-white shadow-lg shadow-violet-500/25' : 'text-slate-400 hover:text-white hover:bg-slate-700/50'}`}
             >
-              <span className="mr-2">{tab.icon}</span>{tab.label}
+              <span className="w-4 h-4">{tab.icon}</span>
+              <span className="hidden sm:inline">{tab.label}</span>
             </button>
           ))}
         </div>
@@ -1403,16 +1503,16 @@ Erstellt mit TSC Startgeld-Erstattung App
         {activeTab === 'settings' && (
           <GlassCard>
             <div className="flex items-center gap-3 mb-6">
-              <IconBadge color="cyan">⛵</IconBadge>
+              <IconBadge icon={Icons.boat} color="cyan" />
               <div>
-                <h2 className="text-xl font-semibold text-white">Deine Bootsdaten</h2>
+                <h2 className="text-xl font-semibold text-white">Bootsdaten</h2>
                 <p className="text-sm text-slate-400">Diese Daten werden für alle Anträge verwendet</p>
               </div>
             </div>
             
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <label className="block text-sm text-slate-400 mb-2">👤 Name Segler:in *</label>
+                <label className="block text-sm text-slate-400 mb-2">Name Segler:in *</label>
                 <input
                   type="text"
                   value={boatData.seglername}
@@ -1423,7 +1523,7 @@ Erstellt mit TSC Startgeld-Erstattung App
               </div>
               
               <div>
-                <label className="block text-sm text-slate-400 mb-2">🔢 Segelnummer *</label>
+                <label className="block text-sm text-slate-400 mb-2">Segelnummer *</label>
                 <input
                   type="text"
                   value={boatData.segelnummer}
@@ -1434,7 +1534,7 @@ Erstellt mit TSC Startgeld-Erstattung App
               </div>
               
               <div>
-                <label className="block text-sm text-slate-400 mb-2">⛵ Bootsklasse</label>
+                <label className="block text-sm text-slate-400 mb-2">Bootsklasse</label>
                 <select
                   value={boatData.bootsklasse}
                   onChange={(e) => setBoatData(prev => ({ ...prev, bootsklasse: e.target.value }))}
@@ -1447,7 +1547,7 @@ Erstellt mit TSC Startgeld-Erstattung App
               </div>
               
               <div>
-                <label className="block text-sm text-slate-400 mb-2">🏦 IBAN</label>
+                <label className="block text-sm text-slate-400 mb-2">IBAN</label>
                 <input
                   type="text"
                   value={boatData.iban}
@@ -1458,7 +1558,7 @@ Erstellt mit TSC Startgeld-Erstattung App
               </div>
               
               <div className="md:col-span-2">
-                <label className="block text-sm text-slate-400 mb-2">💳 Kontoinhaber:in</label>
+                <label className="block text-sm text-slate-400 mb-2">Kontoinhaber:in</label>
                 <input
                   type="text"
                   value={boatData.kontoinhaber}
@@ -1470,8 +1570,9 @@ Erstellt mit TSC Startgeld-Erstattung App
             </div>
             
             {!boatData.segelnummer && (
-              <div className="mt-4 p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-400 text-sm">
-                💡 Die Segelnummer wird benötigt, um deine Platzierung automatisch zu erkennen.
+              <div className="mt-4 p-3 rounded-xl bg-slate-800/50 border border-slate-700/50 text-slate-400 text-sm flex items-start gap-2">
+                <span className="w-5 h-5 flex-shrink-0 text-amber-400">{Icons.info}</span>
+                <span>Die Segelnummer wird benötigt, um deine Platzierung automatisch zu erkennen.</span>
               </div>
             )}
           </GlassCard>
@@ -1483,7 +1584,7 @@ Erstellt mit TSC Startgeld-Erstattung App
             {/* Ergebnisliste Upload */}
             <GlassCard>
               <div className="flex items-center gap-3 mb-6">
-                <IconBadge color="purple">📊</IconBadge>
+                <IconBadge icon={Icons.chart} color="purple" />
                 <div>
                   <h2 className="text-xl font-semibold text-white">Schritt 1: Ergebnisliste</h2>
                   <p className="text-sm text-slate-400">PDF von manage2sail hochladen</p>
@@ -1525,7 +1626,7 @@ Erstellt mit TSC Startgeld-Erstattung App
                   </div>
                 ) : (
                   <div className="text-slate-400">
-                    <div className="text-3xl mb-2">📊</div>
+                    <div className="w-12 h-12 mx-auto mb-3 text-slate-500">{Icons.upload}</div>
                     <div className="text-sm">Ergebnisliste-PDF hierher ziehen oder klicken</div>
                   </div>
                 )}
@@ -1535,7 +1636,7 @@ Erstellt mit TSC Startgeld-Erstattung App
               {pdfResult && (
                 <div className="mt-4 p-4 rounded-xl bg-white/5 border border-white/10">
                   <div className="text-sm text-slate-400 mb-3">
-                    ✏️ Daten korrigieren (falls nötig):
+                    Daten korrigieren (falls nötig):
                   </div>
                   
                   {/* Regattaname */}
@@ -1590,7 +1691,7 @@ Erstellt mit TSC Startgeld-Erstattung App
                 onClick={() => setManualMode(!manualMode)}
                 className="mt-4 text-sm text-slate-400 hover:text-white underline"
               >
-                {manualMode ? '← Zurück zum PDF-Upload' : '✏️ Manuell eingeben'}
+                {manualMode ? 'Zurück zum PDF-Upload' : 'Manuell eingeben'}
               </button>
             </GlassCard>
             
@@ -1598,7 +1699,7 @@ Erstellt mit TSC Startgeld-Erstattung App
             {pdfResult && maxCrew > 1 && (
               <GlassCard>
                 <div className="flex items-center gap-3 mb-6">
-                  <IconBadge color="cyan">👥</IconBadge>
+                  <IconBadge icon={Icons.users} color="cyan" />
                   <div>
                     <h2 className="text-xl font-semibold text-white">Crew ({currentBoatClass})</h2>
                     <p className="text-sm text-slate-400">
@@ -1664,7 +1765,7 @@ Erstellt mit TSC Startgeld-Erstattung App
             {/* Rechnung Upload */}
             <GlassCard>
               <div className="flex items-center gap-3 mb-6">
-                <IconBadge color="amber">🧾</IconBadge>
+                <IconBadge icon={Icons.receipt} color="amber" />
                 <div>
                   <h2 className="text-xl font-semibold text-white">Schritt 2: Rechnung</h2>
                   <p className="text-sm text-slate-400">Startgeld-Rechnung als PDF hochladen</p>
@@ -1701,7 +1802,7 @@ Erstellt mit TSC Startgeld-Erstattung App
                   </div>
                 ) : (
                   <div className="text-slate-400">
-                    <div className="text-3xl mb-2">🧾</div>
+                    <div className="w-12 h-12 mx-auto mb-3 text-slate-500">{Icons.upload}</div>
                     <div className="text-sm">Rechnung-PDF hierher ziehen oder klicken</div>
                   </div>
                 )}
@@ -1724,7 +1825,7 @@ Erstellt mit TSC Startgeld-Erstattung App
             {manualMode && (
               <GlassCard>
                 <div className="flex items-center gap-3 mb-6">
-                  <IconBadge color="cyan">✏️</IconBadge>
+                  <IconBadge icon={Icons.document} color="cyan" />
                   <h2 className="text-xl font-semibold text-white">Manuelle Eingabe</h2>
                 </div>
                 
@@ -1895,7 +1996,7 @@ Erstellt mit TSC Startgeld-Erstattung App
           <GlassCard>
             <div className="flex items-center justify-between mb-6">
               <div className="flex items-center gap-3">
-                <IconBadge color="emerald">📋</IconBadge>
+                <IconBadge icon={Icons.list} color="emerald" />
                 <div>
                   <h2 className="text-xl font-semibold text-white">Deine Regatten</h2>
                   <p className="text-sm text-slate-400">{regatten.length} Regatta(en) • {totalAmount.toFixed(2).replace('.', ',')} € gesamt</p>
@@ -1958,7 +2059,7 @@ Erstellt mit TSC Startgeld-Erstattung App
           <div className="space-y-6">
             <GlassCard>
               <div className="flex items-center gap-3 mb-6">
-                <IconBadge color="emerald">📋</IconBadge>
+                <IconBadge icon={Icons.list} color="emerald" />
                 <div>
                   <h2 className="text-xl font-semibold text-white">Zusammenfassung</h2>
                   <p className="text-sm text-slate-400">{regatten.length} Regatta(en) zur Erstattung</p>
@@ -2011,44 +2112,64 @@ Erstellt mit TSC Startgeld-Erstattung App
             
             {/* Export-Buttons */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <GlassCard className="cursor-pointer hover:border-violet-500/30 transition-all" onClick={generatePDF}>
+              <button
+                onClick={() => { console.log('PDF Button clicked'); generatePDF(); }}
+                disabled={regatten.length === 0}
+                className="group p-5 rounded-xl bg-slate-800/50 border border-slate-700/50 hover:border-violet-500/50 hover:bg-slate-800 transition-all text-left disabled:opacity-50 disabled:cursor-not-allowed"
+              >
                 <div className="flex items-center gap-4">
-                  <div className="w-12 h-12 rounded-xl bg-red-500/20 flex items-center justify-center text-2xl">📄</div>
+                  <div className="w-11 h-11 rounded-lg bg-violet-500/10 border border-violet-500/20 flex items-center justify-center text-violet-400 group-hover:bg-violet-500/20 transition-colors">
+                    {Icons.document}
+                  </div>
                   <div>
-                    <div className="text-white font-semibold">PDF-Antrag</div>
-                    <div className="text-sm text-slate-400">Gesamtantrag</div>
+                    <div className="text-white font-medium">PDF-Antrag</div>
+                    <div className="text-sm text-slate-500">Erstattungsformular</div>
                   </div>
                 </div>
-              </GlassCard>
+              </button>
               
-              <GlassCard className="cursor-pointer hover:border-violet-500/30 transition-all" onClick={generateCSV}>
+              <button
+                onClick={() => { console.log('CSV Button clicked'); generateCSV(); }}
+                disabled={regatten.length === 0}
+                className="group p-5 rounded-xl bg-slate-800/50 border border-slate-700/50 hover:border-emerald-500/50 hover:bg-slate-800 transition-all text-left disabled:opacity-50 disabled:cursor-not-allowed"
+              >
                 <div className="flex items-center gap-4">
-                  <div className="w-12 h-12 rounded-xl bg-emerald-500/20 flex items-center justify-center text-2xl">📊</div>
+                  <div className="w-11 h-11 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 group-hover:bg-emerald-500/20 transition-colors">
+                    {Icons.table}
+                  </div>
                   <div>
-                    <div className="text-white font-semibold">CSV</div>
-                    <div className="text-sm text-slate-400">Buchungssatz</div>
+                    <div className="text-white font-medium">CSV-Export</div>
+                    <div className="text-sm text-slate-500">Buchungssatz</div>
                   </div>
                 </div>
-              </GlassCard>
+              </button>
               
-              <GlassCard className="cursor-pointer hover:border-violet-500/30 transition-all" onClick={downloadAllDocuments}>
+              <button
+                onClick={() => { console.log('All Files Button clicked'); downloadAllDocuments(); }}
+                disabled={regatten.length === 0}
+                className="group p-5 rounded-xl bg-slate-800/50 border border-slate-700/50 hover:border-cyan-500/50 hover:bg-slate-800 transition-all text-left disabled:opacity-50 disabled:cursor-not-allowed"
+              >
                 <div className="flex items-center gap-4">
-                  <div className="w-12 h-12 rounded-xl bg-cyan-500/20 flex items-center justify-center text-2xl">📦</div>
+                  <div className="w-11 h-11 rounded-lg bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center text-cyan-400 group-hover:bg-cyan-500/20 transition-colors">
+                    {Icons.archive}
+                  </div>
                   <div>
-                    <div className="text-white font-semibold">Alle Dateien</div>
-                    <div className="text-sm text-slate-400">Inkl. PDFs</div>
+                    <div className="text-white font-medium">Alle Dateien</div>
+                    <div className="text-sm text-slate-500">Inkl. Belege</div>
                   </div>
                 </div>
-              </GlassCard>
+              </button>
             </div>
             
             {/* ONLINE EINREICHEN */}
-            <GlassCard className="border-2 border-emerald-500/30 bg-emerald-500/5">
-              <div className="flex items-center gap-4 mb-4">
-                <div className="w-14 h-14 rounded-xl bg-emerald-500/20 flex items-center justify-center text-3xl">🚀</div>
+            <div className="p-6 rounded-xl bg-gradient-to-r from-emerald-900/30 to-emerald-800/20 border border-emerald-700/30">
+              <div className="flex items-center gap-4 mb-5">
+                <div className="w-12 h-12 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
+                  {Icons.send}
+                </div>
                 <div>
                   <div className="text-white font-semibold text-lg">Online einreichen</div>
-                  <div className="text-sm text-slate-400">Antrag direkt an den TSC senden - alle Dateien werden automatisch angehängt!</div>
+                  <div className="text-sm text-slate-400">Antrag direkt an den TSC senden</div>
                 </div>
               </div>
               
@@ -2056,41 +2177,52 @@ Erstellt mit TSC Startgeld-Erstattung App
                 <button
                   onClick={submitOnline}
                   disabled={regatten.length === 0 || isSubmitting}
-                  className="py-4 rounded-xl bg-gradient-to-r from-emerald-600 to-emerald-500 text-white font-medium hover:from-emerald-500 hover:to-emerald-400 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                  className="py-4 px-6 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-medium transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                 >
                   {isSubmitting ? (
-                    <>⏳ Wird gesendet...</>
+                    <>
+                      <svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                      </svg>
+                      Wird gesendet...
+                    </>
                   ) : (
-                    <>📧 Jetzt online einreichen</>
+                    <>
+                      {Icons.send}
+                      Jetzt einreichen
+                    </>
                   )}
                 </button>
                 
                 <button
                   onClick={submitViaEmail}
                   disabled={regatten.length === 0}
-                  className="py-4 rounded-xl bg-white/10 border border-white/20 text-white font-medium hover:bg-white/20 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                  className="py-4 px-6 rounded-xl bg-slate-700 hover:bg-slate-600 border border-slate-600 text-white font-medium transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                 >
-                  ✉️ Per E-Mail senden (manuell)
+                  {Icons.mail}
+                  Per E-Mail senden
                 </button>
               </div>
               
-              <div className="mt-4 p-3 rounded-lg bg-violet-500/10 border border-violet-500/20 text-violet-300 text-sm">
-                💡 <strong>Online einreichen</strong> sendet alles automatisch. <strong>Per E-Mail</strong> öffnet dein Mail-Programm - du musst die heruntergeladenen Dateien dann selbst anhängen.
+              <div className="mt-4 p-3 rounded-lg bg-slate-800/50 border border-slate-700/50 text-slate-400 text-sm flex items-start gap-2">
+                <span className="w-5 h-5 flex-shrink-0 mt-0.5">{Icons.info}</span>
+                <span><strong className="text-slate-300">Online einreichen</strong> sendet alles automatisch. <strong className="text-slate-300">Per E-Mail</strong> öffnet dein Mail-Programm – Dateien bitte manuell anhängen.</span>
               </div>
-            </GlassCard>
+            </div>
           </div>
         )}
       </main>
       
       {/* Hilfe Modal */}
-      <Modal isOpen={showHelpModal} onClose={() => setShowHelpModal(false)} title="❓ Hilfe">
+      <Modal isOpen={showHelpModal} onClose={() => setShowHelpModal(false)} title="Hilfe">
         <div className="space-y-4 text-sm text-slate-300">
           <div>
-            <h4 className="font-semibold text-white mb-2">📊 Ergebnislisten hochladen</h4>
+            <h4 className="font-semibold text-white mb-2">Chart Ergebnislisten hochladen</h4>
             <p>Lade die Ergebnisliste als PDF von manage2sail hoch. Deine Platzierung wird anhand der Segelnummer automatisch gefunden.</p>
           </div>
           <div>
-            <h4 className="font-semibold text-white mb-2">🧾 Rechnungen hochladen</h4>
+            <h4 className="font-semibold text-white mb-2">Rechnungen hochladen</h4>
             <p>Lade die Startgeld-Rechnung als PDF hoch. Der Betrag wird automatisch erkannt.</p>
           </div>
           <div>
