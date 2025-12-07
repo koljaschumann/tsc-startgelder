@@ -100,6 +100,7 @@ const Icons = {
   userPlus: <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" /></svg>,
   bank: <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 21h18M3 10h18M5 6l7-3 7 3M4 10v11M20 10v11M8 14v3M12 14v3M16 14v3" /></svg>,
   eye: <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>,
+  lock: <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" /></svg>,
   chevronRight: <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>,
   chevronLeft: <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>,
 };
@@ -287,17 +288,34 @@ const ParserStrategies = {
       return null;
     },
     parseTotal: (text) => {
-      // Zähle nummerierte Einträge in der Ergebnisliste
-      const entries = text.match(/^\s*\d{1,3}\s+(?:GER|AUT|SUI|NED|POL|DEN|SWE|FRA|ITA|ESP|GBR)/gmi);
-      if (entries && entries.length > 3) return entries.length;
+      // Finde die höchste Platznummer in der gesamten Ergebnisliste
+      const rankMatches = text.match(/^\s*(\d{1,3})\s+(?:GER|AUT|SUI|NED|POL|DEN|SWE|FRA|ITA|ESP|GBR)/gmi);
+      if (rankMatches && rankMatches.length > 0) {
+        const ranks = rankMatches.map(m => parseInt(m.match(/\d+/)[0]));
+        return Math.max(...ranks);
+      }
       // Oder explizite Angabe
       const match = text.match(/(\d+)\s*(?:boats?|entries|teilnehmer|boote|meldungen)/i);
       return match ? parseInt(match[1]) : null;
     },
     parseRaces: (text) => {
-      // Zähle Spalten mit R1, R2, etc.
-      const raceHeaders = text.match(/R\d+/g);
-      return raceHeaders ? new Set(raceHeaders).size : null;
+      // Zähle nur GEWERTETE Wettfahrten (mit Punktzahlen, nicht DNS/DNF/DNC etc.)
+      // Suche nach R1, R2, etc. Spalten und prüfe ob Zahlen dahinter stehen
+      const raceHeaders = text.match(/R(\d+)/gi);
+      if (raceHeaders) {
+        const raceNums = [...new Set(raceHeaders.map(r => parseInt(r.slice(1))))];
+        // Prüfe welche Rennen tatsächlich Punkte haben (nicht nur Buchstaben wie DNS, DNF)
+        let scoredRaces = 0;
+        for (const raceNum of raceNums.sort((a,b) => a-b)) {
+          // Suche nach Punktzahlen in dieser Spalte (Zahlen 1-99 für Platzierungen)
+          const racePattern = new RegExp(`R${raceNum}[^R]*?(\\d{1,2})(?:\\s|\\(|$)`, 'gi');
+          if (racePattern.test(text)) {
+            scoredRaces = raceNum; // Das höchste gewertete Rennen
+          }
+        }
+        return scoredRaces || raceNums.length;
+      }
+      return null;
     }
   },
 
@@ -312,8 +330,13 @@ const ParserStrategies = {
       return match ? parseInt(match[1]) : null;
     },
     parseTotal: (text) => {
-      const lines = text.split('\n').filter(l => /^\s*\d+\s+/.test(l));
-      return lines.length || null;
+      // Finde die höchste Platznummer
+      const rankMatches = text.match(/^\s*(\d{1,3})\s+/gm);
+      if (rankMatches && rankMatches.length > 0) {
+        const ranks = rankMatches.map(m => parseInt(m.trim())).filter(n => n > 0 && n < 500);
+        return ranks.length > 0 ? Math.max(...ranks) : null;
+      }
+      return null;
     },
     parseRaces: (text) => {
       const match = text.match(/(\d+)\s*(?:races?|wettfahrten)/i);
@@ -339,8 +362,16 @@ const ParserStrategies = {
       return null;
     },
     parseTotal: (text) => {
+      // Finde höchste Platznummer
       const match = text.match(/(\d+)\s*(?:teilnehmer|boote|starter)/i);
-      return match ? parseInt(match[1]) : null;
+      if (match) return parseInt(match[1]);
+      // Oder zähle Platzierungen
+      const rankMatches = text.match(/^\s*(\d{1,3})[\.\s]/gm);
+      if (rankMatches && rankMatches.length > 0) {
+        const ranks = rankMatches.map(m => parseInt(m.trim())).filter(n => n > 0 && n < 500);
+        return ranks.length > 0 ? Math.max(...ranks) : null;
+      }
+      return null;
     },
     parseRaces: (text) => {
       const match = text.match(/(\d+)\s*(?:wettfahrten|läufe)/i);
@@ -377,21 +408,36 @@ const ParserStrategies = {
       return null;
     },
     parseTotal: (text) => {
-      // Zähle nummerierte Zeilen
-      const numberedLines = text.split('\n').filter(line => /^\s*\d{1,3}[\.\s]/.test(line));
-      if (numberedLines.length > 3) return numberedLines.length;
+      // Finde die höchste Platznummer im gesamten Text
+      const rankMatches = text.match(/^\s*(\d{1,3})[\.\s]/gm);
+      if (rankMatches && rankMatches.length > 0) {
+        const ranks = rankMatches.map(m => parseInt(m.trim())).filter(n => n > 0 && n < 500);
+        if (ranks.length > 0) return Math.max(...ranks);
+      }
       
       // Oder explizite Angabe
       const match = text.match(/(\d+)\s*(?:boats?|entries|teilnehmer|boote|starter|meldungen)/i);
       return match ? parseInt(match[1]) : null;
     },
     parseRaces: (text) => {
-      // R1, R2, etc. zählen
-      const raceMatches = text.match(/\b[Rr](?:ace)?\s*(\d+)/g);
+      // Suche nach "Wettfahrten: X" oder "X Wettfahrten gewertet"
+      const scoredMatch = text.match(/(\d+)\s*(?:wettfahrten|races?)\s*(?:gewertet|scored|completed)/i);
+      if (scoredMatch) return parseInt(scoredMatch[1]);
+      
+      // R1, R2, etc. - finde die höchste Nummer mit tatsächlichen Punkten
+      const raceMatches = text.match(/\bR(\d+)/gi);
       if (raceMatches) {
-        const nums = raceMatches.map(m => parseInt(m.match(/\d+/)[0]));
-        return Math.max(...nums);
+        const nums = [...new Set(raceMatches.map(m => parseInt(m.slice(1))))];
+        // Prüfe ob die Rennen Punkte haben
+        let maxScoredRace = 0;
+        for (const num of nums.sort((a,b) => a-b)) {
+          // Suche nach einer Zeile mit Rn gefolgt von einer Zahl (nicht DNS/DNF)
+          const hasScores = new RegExp(`R${num}[\\s\\S]{0,50}?\\b([1-9]\\d?)\\b`, 'i').test(text);
+          if (hasScores) maxScoredRace = num;
+        }
+        return maxScoredRace || Math.max(...nums);
       }
+      
       // Oder explizite Angabe
       const match = text.match(/(\d+)\s*(?:races?|wettfahrten|läufe)/i);
       return match ? parseInt(match[1]) : null;
@@ -529,6 +575,12 @@ function App() {
   const [showSeasonModal, setShowSeasonModal] = useState(false);
   const [showCrewModal, setShowCrewModal] = useState(false);
   const [showAdminModal, setShowAdminModal] = useState(false);
+  const [showAdminPasswordModal, setShowAdminPasswordModal] = useState(false);
+  const [adminPassword, setAdminPassword] = useState('');
+  const [adminAuthenticated, setAdminAuthenticated] = useState(false);
+  
+  // Admin-Passwort (kann hier geändert werden)
+  const ADMIN_PASSWORD = 'TSC2025!';
   
   // Bootsdaten
   const [boatData, setBoatData] = useState(() => {
@@ -724,11 +776,13 @@ function App() {
       const pdf = await loadingTask.promise;
       let fullText = '';
       
-      for (let i = 1; i <= Math.min(pdf.numPages, 5); i++) {
+      // ALLE Seiten extrahieren (nicht nur die ersten 5)
+      console.log(`PDF hat ${pdf.numPages} Seiten`);
+      for (let i = 1; i <= pdf.numPages; i++) {
         const page = await pdf.getPage(i);
         const content = await page.getTextContent();
         const pageText = content.items.map(item => item.str).join(' ');
-        fullText += pageText + '\n';
+        fullText += pageText + '\n--- Seite ' + i + ' Ende ---\n';
       }
       
       return fullText;
@@ -1584,6 +1638,23 @@ function App() {
               
               <div className="flex items-center gap-2">
                 <button
+                  onClick={() => {
+                    if (adminAuthenticated) {
+                      setShowAdminModal(true);
+                    } else {
+                      setShowAdminPasswordModal(true);
+                    }
+                  }}
+                  className={`w-10 h-10 rounded-xl flex items-center justify-center transition-colors ${
+                    adminAuthenticated 
+                      ? 'bg-amber-500/20 text-amber-500 hover:bg-amber-500/30' 
+                      : isDark ? 'bg-slate-800 text-slate-400 hover:text-white' : 'bg-slate-100 text-slate-600 hover:text-slate-900'
+                  }`}
+                  title={adminAuthenticated ? "Admin-Bereich" : "Admin-Login"}
+                >
+                  {adminAuthenticated ? Icons.settings : Icons.lock}
+                </button>
+                <button
                   onClick={() => setIsDark(!isDark)}
                   className={`w-10 h-10 rounded-xl flex items-center justify-center transition-colors ${isDark ? 'bg-slate-800 text-slate-400 hover:text-white' : 'bg-slate-100 text-slate-600 hover:text-slate-900'}`}
                 >
@@ -1667,13 +1738,6 @@ function App() {
                   >
                     <div className="w-10 h-10 rounded-lg bg-cyan-500/10 flex items-center justify-center text-cyan-500 mb-2">{Icons.userPlus}</div>
                     <div className={`font-medium ${isDark ? 'text-white' : 'text-slate-900'}`}>Crew verwalten</div>
-                  </button>
-                  <button
-                    onClick={() => setShowAdminModal(true)}
-                    className={`p-4 rounded-xl text-left transition-all ${isDark ? 'bg-slate-800/50 hover:bg-slate-700/50' : 'bg-slate-100 hover:bg-slate-200'}`}
-                  >
-                    <div className="w-10 h-10 rounded-lg bg-amber-500/10 flex items-center justify-center text-amber-500 mb-2">{Icons.eye}</div>
-                    <div className={`font-medium ${isDark ? 'text-white' : 'text-slate-900'}`}>Admin</div>
                   </button>
                 </div>
               </GlassCard>
@@ -2448,7 +2512,53 @@ function App() {
           </div>
         </Modal>
         
-        <Modal isOpen={showAdminModal} onClose={() => setShowAdminModal(false)} title="Admin-Übersicht" size="lg">
+        {/* Admin-Passwort Modal */}
+        <Modal isOpen={showAdminPasswordModal} onClose={() => { setShowAdminPasswordModal(false); setAdminPassword(''); }} title="Admin-Zugang">
+          <div className="space-y-4">
+            <p className={`text-sm ${isDark ? 'text-slate-400' : 'text-slate-600'}`}>
+              Der Admin-Bereich ist passwortgeschützt. Bitte gib das Passwort ein.
+            </p>
+            <div>
+              <label className={`block text-sm mb-2 ${isDark ? 'text-slate-400' : 'text-slate-600'}`}>Passwort</label>
+              <input
+                type="password"
+                value={adminPassword}
+                onChange={(e) => setAdminPassword(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && adminPassword === ADMIN_PASSWORD) {
+                    setAdminAuthenticated(true);
+                    setShowAdminPasswordModal(false);
+                    setShowAdminModal(true);
+                    setAdminPassword('');
+                  }
+                }}
+                placeholder="Admin-Passwort"
+                className={`w-full px-4 py-3 rounded-xl ${isDark ? 'bg-slate-800 border-slate-700 text-white' : 'bg-white border-slate-200 text-slate-900'} border focus:outline-none focus:ring-2 focus:ring-violet-500`}
+                autoFocus
+              />
+            </div>
+            {adminPassword && adminPassword !== ADMIN_PASSWORD && adminPassword.length >= 5 && (
+              <div className="text-sm text-red-500">Falsches Passwort</div>
+            )}
+            <button
+              onClick={() => {
+                if (adminPassword === ADMIN_PASSWORD) {
+                  setAdminAuthenticated(true);
+                  setShowAdminPasswordModal(false);
+                  setShowAdminModal(true);
+                  setAdminPassword('');
+                }
+              }}
+              disabled={adminPassword !== ADMIN_PASSWORD}
+              className="w-full py-3 rounded-xl bg-violet-600 text-white font-medium hover:bg-violet-500 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Anmelden
+            </button>
+          </div>
+        </Modal>
+        
+        {/* Admin-Übersicht Modal (nur für authentifizierte Admins) */}
+        <Modal isOpen={showAdminModal && adminAuthenticated} onClose={() => setShowAdminModal(false)} title="Admin-Übersicht" size="lg">
           <div className="space-y-6">
             <div className={`p-4 rounded-xl ${isDark ? 'bg-slate-800' : 'bg-slate-100'}`}>
               <h4 className={`font-medium mb-3 ${isDark ? 'text-white' : 'text-slate-900'}`}>Alle Saisons</h4>
@@ -2486,6 +2596,15 @@ function App() {
                 className="mt-4 px-4 py-2 rounded-lg bg-red-500/10 text-red-500 hover:bg-red-500/20 text-sm"
               >
                 Alle Daten löschen
+              </button>
+              <button
+                onClick={() => {
+                  setAdminAuthenticated(false);
+                  setShowAdminModal(false);
+                }}
+                className={`mt-2 w-full px-4 py-2 rounded-lg text-sm ${isDark ? 'bg-slate-700 text-slate-300 hover:bg-slate-600' : 'bg-slate-200 text-slate-700 hover:bg-slate-300'}`}
+              >
+                Admin abmelden
               </button>
             </div>
           </div>
