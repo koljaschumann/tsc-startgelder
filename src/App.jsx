@@ -255,7 +255,15 @@ const ParserStrategies = {
   // Manage2Sail Format
   manage2sail: {
     name: 'Manage2Sail',
-    detect: (text) => text.includes('manage2sail') || text.includes('Manage2Sail') || text.includes('M2S'),
+    detect: (text) => {
+      // Explizite Erwähnung
+      if (text.includes('manage2sail') || text.includes('Manage2Sail') || text.includes('M2S')) return true;
+      // Typisches Format: "Final Overall Results" + "Discard rule"
+      if (text.includes('Final Overall Results') || text.includes('Discard rule')) return true;
+      // Format mit R1, R2, R3 Spaltenüberschriften
+      if (/R1\s+R2\s+R3/i.test(text)) return true;
+      return false;
+    },
     parseRank: (text, sailNumber) => {
       const sailDigits = sailNumber.replace(/\D/g, '');
       const patterns = [
@@ -263,14 +271,26 @@ const ParserStrategies = {
         new RegExp(`^\\s*(\\d+)\\s+(?:GER|AUT|SUI|NED|POL|DEN|SWE|FRA|ITA|ESP|GBR)?\\s*${sailDigits}\\b`, 'gmi'),
         // Format: "GER 12345 ... 1."
         new RegExp(`GER\\s*${sailDigits}[^\\n]*?(\\d+)\\.?\\s*$`, 'gmi'),
+        // Format ohne Länderkennung: Nummer Segelnummer Name
+        new RegExp(`(\\d{1,3})\\s+${sailDigits}\\s+[A-ZÄÖÜ]`, 'gm'),
+        // Segelnummer gefolgt von Punktzahlen und dann Platzierung
+        new RegExp(`${sailDigits}[^\\n]+?(\\d{1,3})\\s*$`, 'gm'),
       ];
       for (const pattern of patterns) {
+        pattern.lastIndex = 0; // Reset regex
         const match = pattern.exec(text);
-        if (match) return parseInt(match[1]);
+        if (match) {
+          const rank = parseInt(match[1]);
+          if (rank > 0 && rank < 500) return rank;
+        }
       }
       return null;
     },
     parseTotal: (text) => {
+      // Zähle nummerierte Einträge in der Ergebnisliste
+      const entries = text.match(/^\s*\d{1,3}\s+(?:GER|AUT|SUI|NED|POL|DEN|SWE|FRA|ITA|ESP|GBR)/gmi);
+      if (entries && entries.length > 3) return entries.length;
+      // Oder explizite Angabe
       const match = text.match(/(\d+)\s*(?:boats?|entries|teilnehmer|boote|meldungen)/i);
       return match ? parseInt(match[1]) : null;
     },
@@ -762,17 +782,53 @@ function App() {
     
     // Regattaname extrahieren
     let regattaName = null;
-    const namePatterns = [
-      /(?:regatta|meisterschaft|pokal|cup|trophy|preis)[:\s]+([^\n]+)/i,
-      /^([A-ZÄÖÜ][^\n]{5,50}(?:regatta|cup|pokal|preis|trophy|meisterschaft))/im,
-      /event[:\s]+([^\n]+)/i,
-    ];
-    for (const pattern of namePatterns) {
-      const match = text.match(pattern);
-      if (match) {
-        regattaName = match[1].trim();
-        break;
+    
+    // Manage2Sail Format: "Final Overall Results" -> suche nach Event/Regatta Namen davor
+    const manage2sailMatch = text.match(/^([^\n]{10,60}?)(?:\s+Final|\s+Overall|\s+Results)/im);
+    if (manage2sailMatch) {
+      regattaName = manage2sailMatch[1].trim();
+    }
+    
+    // Andere Patterns versuchen
+    if (!regattaName) {
+      const namePatterns = [
+        /(?:regatta|meisterschaft|pokal|cup|trophy|preis)[:\s]+([^\n]+)/i,
+        /^([A-ZÄÖÜ][^\n]{5,50}(?:regatta|cup|pokal|preis|trophy|meisterschaft))/im,
+        /event[:\s]+([^\n]+)/i,
+        /veranstaltung[:\s]+([^\n]+)/i,
+        // Suche nach typischen Regattanamen-Mustern
+        /(\d{4}\s+[A-ZÄÖÜ][a-zäöü]+(?:\s+[A-ZÄÖÜ][a-zäöü]+)*(?:\s+(?:Cup|Pokal|Preis|Trophy|Regatta|Meisterschaft)))/i,
+      ];
+      for (const pattern of namePatterns) {
+        const match = text.match(pattern);
+        if (match) {
+          regattaName = match[1].trim();
+          break;
+        }
       }
+    }
+    
+    // Fallback: Ersten sinnvollen Teil des Textes nehmen
+    if (!regattaName) {
+      // Nimm die ersten Wörter bis zu einem Trennzeichen
+      const firstLine = text.split('\n')[0] || '';
+      const cleanedLine = firstLine.replace(/^\d+\s*/, '').trim(); // Führende Zahlen entfernen
+      
+      if (cleanedLine.length > 5 && cleanedLine.length < 100) {
+        // Kürze auf max 50 Zeichen
+        regattaName = cleanedLine.slice(0, 50).trim();
+        if (cleanedLine.length > 50) regattaName += '...';
+      }
+    }
+    
+    // Letzter Fallback
+    if (!regattaName) {
+      regattaName = `Regatta vom ${new Date().toLocaleDateString('de-DE')}`;
+    }
+    
+    // Bereinigen: Entferne übermäßig lange Namen
+    if (regattaName && regattaName.length > 80) {
+      regattaName = regattaName.slice(0, 77) + '...';
     }
     
     // Datum extrahieren
@@ -1622,13 +1678,15 @@ function App() {
                   <div className="space-y-2">
                     {regatten.slice(-3).reverse().map(r => (
                       <div key={r.id} className={`flex items-center justify-between p-3 rounded-xl ${isDark ? 'bg-slate-800/50' : 'bg-slate-100'}`}>
-                        <div>
-                          <div className={`font-medium ${isDark ? 'text-white' : 'text-slate-900'}`}>{r.regattaName}</div>
+                        <div className="flex-1 min-w-0 mr-3">
+                          <div className={`font-medium truncate ${isDark ? 'text-white' : 'text-slate-900'}`}>
+                            {r.regattaName?.length > 50 ? r.regattaName.slice(0, 47) + '...' : r.regattaName}
+                          </div>
                           <div className={`text-sm ${isDark ? 'text-slate-500' : 'text-slate-500'}`}>
                             Platz {r.placement} • {r.invoiceAmount?.toFixed(2)} €
                           </div>
                         </div>
-                        <div className={`text-2xl font-bold ${isDark ? 'text-slate-600' : 'text-slate-300'}`}>{r.placement}.</div>
+                        <div className={`text-2xl font-bold flex-shrink-0 ${isDark ? 'text-slate-600' : 'text-slate-300'}`}>{r.placement}.</div>
                       </div>
                     ))}
                   </div>
@@ -1697,12 +1755,12 @@ function App() {
                     
                     {pdfProcessing ? (
                       <div className="text-violet-500">
-                        <div className="w-12 h-12 mx-auto mb-3 animate-spin">{Icons.refresh}</div>
+                        <svg className="w-12 h-12 mx-auto mb-3 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
                         <div className="text-sm">{ocrProgress?.status || 'Verarbeite PDF...'}</div>
                       </div>
                     ) : pdfResult ? (
                       <div className={isDark ? 'text-emerald-400' : 'text-emerald-600'}>
-                        <div className="w-12 h-12 mx-auto mb-3">{Icons.check}</div>
+                        <svg className="w-12 h-12 mx-auto mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
                         <div className="font-medium">{pdfResult.regattaName || 'Ergebnisliste erkannt'}</div>
                         {pdfResult.participant ? (
                           <div className="text-sm mt-1">Platz {pdfResult.participant.rank} von {pdfResult.totalParticipants}</div>
@@ -1713,7 +1771,7 @@ function App() {
                       </div>
                     ) : (
                       <div className={isDark ? 'text-slate-400' : 'text-slate-500'}>
-                        <div className="w-12 h-12 mx-auto mb-3">{Icons.upload}</div>
+                        <svg className="w-12 h-12 mx-auto mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>
                         <div className="text-sm">PDF hierher ziehen oder klicken</div>
                       </div>
                     )}
@@ -1950,17 +2008,17 @@ function App() {
                     
                     {invoiceProcessing ? (
                       <div className="text-amber-500">
-                        <div className="w-12 h-12 mx-auto mb-3 animate-spin">{Icons.refresh}</div>
+                        <svg className="w-12 h-12 mx-auto mb-3 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
                         <div className="text-sm">Rechnung wird verarbeitet...</div>
                       </div>
                     ) : currentInvoiceData ? (
                       <div className={isDark ? 'text-emerald-400' : 'text-emerald-600'}>
-                        <div className="w-12 h-12 mx-auto mb-3">{Icons.check}</div>
+                        <svg className="w-12 h-12 mx-auto mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
                         <div className="font-medium">Rechnung hochgeladen</div>
                       </div>
                     ) : (
                       <div className={isDark ? 'text-slate-400' : 'text-slate-500'}>
-                        <div className="w-12 h-12 mx-auto mb-3">{Icons.upload}</div>
+                        <svg className="w-12 h-12 mx-auto mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>
                         <div className="text-sm">PDF hierher ziehen oder klicken</div>
                       </div>
                     )}
@@ -2022,11 +2080,13 @@ function App() {
                   {regatten.map((r, i) => (
                     <div key={r.id} className={`p-4 rounded-xl ${isDark ? 'bg-slate-800/50' : 'bg-slate-100'}`}>
                       <div className="flex items-center justify-between">
-                        <div className="flex-1">
+                        <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2">
-                            <span className={`text-2xl font-bold ${isDark ? 'text-slate-600' : 'text-slate-300'}`}>{i + 1}</span>
-                            <div>
-                              <div className={`font-medium ${isDark ? 'text-white' : 'text-slate-900'}`}>{r.regattaName}</div>
+                            <span className={`text-2xl font-bold flex-shrink-0 ${isDark ? 'text-slate-600' : 'text-slate-300'}`}>{i + 1}</span>
+                            <div className="min-w-0">
+                              <div className={`font-medium truncate ${isDark ? 'text-white' : 'text-slate-900'}`}>
+                                {r.regattaName?.length > 60 ? r.regattaName.slice(0, 57) + '...' : r.regattaName}
+                              </div>
                               <div className={`text-sm ${isDark ? 'text-slate-500' : 'text-slate-500'}`}>
                                 {r.date && new Date(r.date).toLocaleDateString('de-DE')} • 
                                 Platz {r.placement} von {r.totalParticipants} • 
@@ -2040,7 +2100,7 @@ function App() {
                             </div>
                           </div>
                         </div>
-                        <div className="flex items-center gap-3">
+                        <div className="flex items-center gap-3 flex-shrink-0 ml-3">
                           <span className={`text-lg font-semibold ${isDark ? 'text-emerald-400' : 'text-emerald-600'}`}>{r.invoiceAmount?.toFixed(2)} €</span>
                           <button
                             onClick={() => {
