@@ -174,6 +174,7 @@ function App() {
   const [manualPlacement, setManualPlacement] = useState('');
   const [manualTotalParticipants, setManualTotalParticipants] = useState('');
   const [manualRegattaName, setManualRegattaName] = useState('');
+  const [manualRaceCount, setManualRaceCount] = useState('');
   
   // Crew-Verwaltung für Mehrpersonenboote
   const [crewMembers, setCrewMembers] = useState([]);
@@ -795,6 +796,7 @@ function App() {
       // Platzierung: Manuell eingegeben oder aus PDF
       const placement = manualPlacement ? parseInt(manualPlacement) : pdfResult.participant?.rank;
       const totalParticipants = manualTotalParticipants ? parseInt(manualTotalParticipants) : pdfResult.totalParticipants;
+      const raceCount = manualRaceCount ? parseInt(manualRaceCount) : pdfResult.raceCount;
       const regattaName = manualRegattaName.trim() || pdfResult.regattaName || '';
       
       if (!placement) {
@@ -827,7 +829,7 @@ function App() {
         date: pdfResult.date || '',
         placement: placement,
         totalParticipants: totalParticipants || 0,
-        raceCount: pdfResult.raceCount || 0,
+        raceCount: raceCount || 0,
         sailorName: pdfResult.participant?.name || boatData.seglername,
         // Crew speichern (nur ausgefüllte)
         crew: maxCrewForClass > 1 ? crewMembers.filter(m => m.name.trim()) : [],
@@ -860,6 +862,7 @@ function App() {
       setManualPlacement('');
       setManualTotalParticipants('');
       setManualRegattaName('');
+      setManualRaceCount('');
       setCrewMembers([]);
       setDebugText('');
       
@@ -932,7 +935,12 @@ function App() {
   const totalAmount = regatten.reduce((sum, r) => sum + (r.invoiceAmount || 0), 0);
 
   // === PDF EXPORT (Gesamtantrag mit Anhängen) ===
-  const generatePDF = async () => {
+  const generatePDF = () => {
+    if (regatten.length === 0) {
+      setError('Keine Regatten vorhanden - bitte erst Regatten hinzufügen');
+      return null;
+    }
+    
     try {
       const doc = new jsPDF();
       
@@ -960,7 +968,7 @@ function App() {
       
       doc.setFontSize(12);
       doc.setFont('helvetica', 'bold');
-      doc.text('Antragsteller', 25, 48);
+      doc.text('Antragsteller:in', 25, 48);
       
       doc.setFontSize(10);
       doc.setFont('helvetica', 'normal');
@@ -972,7 +980,7 @@ function App() {
       
       doc.text([
         `IBAN: ${boatData.iban || '-'}`,
-        `Kontoinhaber: ${boatData.kontoinhaber || '-'}`,
+        `Kontoinhaber:in: ${boatData.kontoinhaber || '-'}`,
       ], 110, 56);
       
       // Regatten-Tabelle
@@ -1171,12 +1179,17 @@ function App() {
 
   // === CSV EXPORT (Ein Buchungssatz) ===
   const generateCSV = () => {
+    if (regatten.length === 0) {
+      setError('Keine Regatten vorhanden - bitte erst Regatten hinzufügen');
+      return;
+    }
+    
     try {
       // Ein Buchungssatz für die Buchhaltung
       const datum = new Date().toLocaleDateString('de-DE');
       const verwendungszweck = `Startgeld-Erstattung ${boatData.seglername} - ${regatten.length} Regatta(en): ${regatten.map(r => r.regattaName).join(', ')}`;
       
-      const headers = ['Datum', 'Empfänger', 'IBAN', 'Betrag', 'Währung', 'Verwendungszweck', 'Bootsklasse', 'Segelnummer'];
+      const headers = ['Datum', 'Empfänger:in', 'IBAN', 'Betrag', 'Währung', 'Verwendungszweck', 'Bootsklasse', 'Segelnummer'];
       const row = [
         datum,
         boatData.kontoinhaber || boatData.seglername,
@@ -1198,8 +1211,10 @@ function App() {
       const a = document.createElement('a');
       a.href = url;
       a.download = `TSC_Buchungssatz_${boatData.seglername?.replace(/\s/g, '_') || 'Export'}_${new Date().toISOString().slice(0,10)}.csv`;
+      document.body.appendChild(a);
       a.click();
-      URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 100);
       setSuccess('CSV-Buchungssatz wurde erstellt');
       
     } catch (err) {
@@ -1405,7 +1420,7 @@ Erstellt mit TSC Startgeld-Erstattung App
             
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <label className="block text-sm text-slate-400 mb-2">👤 Seglername *</label>
+                <label className="block text-sm text-slate-400 mb-2">👤 Name Segler:in *</label>
                 <input
                   type="text"
                   value={boatData.seglername}
@@ -1451,7 +1466,7 @@ Erstellt mit TSC Startgeld-Erstattung App
               </div>
               
               <div className="md:col-span-2">
-                <label className="block text-sm text-slate-400 mb-2">💳 Kontoinhaber</label>
+                <label className="block text-sm text-slate-400 mb-2">💳 Kontoinhaber:in</label>
                 <input
                   type="text"
                   value={boatData.kontoinhaber}
@@ -1543,8 +1558,8 @@ Erstellt mit TSC Startgeld-Erstattung App
                     />
                   </div>
                   
-                  {/* Platzierung und Teilnehmer */}
-                  <div className="grid grid-cols-2 gap-4">
+                  {/* Platzierung, Teilnehmer und Wettfahrten */}
+                  <div className="grid grid-cols-3 gap-4">
                     <div>
                       <label className="block text-xs text-slate-500 mb-1">Platzierung *</label>
                       <input
@@ -1556,12 +1571,22 @@ Erstellt mit TSC Startgeld-Erstattung App
                       />
                     </div>
                     <div>
-                      <label className="block text-xs text-slate-500 mb-1">Teilnehmer gesamt</label>
+                      <label className="block text-xs text-slate-500 mb-1">Teilnehmer:innen</label>
                       <input
                         type="number"
                         value={manualTotalParticipants || pdfResult.totalParticipants || ''}
                         onChange={(e) => setManualTotalParticipants(e.target.value)}
                         placeholder={pdfResult.totalParticipants?.toString() || 'z.B. 42'}
+                        className="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white placeholder-slate-500 focus:outline-none focus:border-violet-500/50 text-sm"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-slate-500 mb-1">Gew. Wettfahrten</label>
+                      <input
+                        type="number"
+                        value={manualRaceCount || pdfResult.raceCount || ''}
+                        onChange={(e) => setManualRaceCount(e.target.value)}
+                        placeholder={pdfResult.raceCount?.toString() || 'z.B. 6'}
                         className="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white placeholder-slate-500 focus:outline-none focus:border-violet-500/50 text-sm"
                       />
                     </div>
@@ -1603,7 +1628,7 @@ Erstellt mit TSC Startgeld-Erstattung App
                           type="text"
                           value={member.name}
                           onChange={(e) => updateCrewMember(index, 'name', e.target.value)}
-                          placeholder={index === 0 ? 'Steuermann/Skipper' : `Crew ${index + 1}`}
+                          placeholder={index === 0 ? 'Steuerperson/Skipper:in' : `Crew ${index + 1}`}
                           className="px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white placeholder-slate-500 focus:outline-none focus:border-violet-500/50 text-sm"
                         />
                         <input
@@ -1768,7 +1793,7 @@ Erstellt mit TSC Startgeld-Erstattung App
                     />
                   </div>
                   <div>
-                    <label className="block text-sm text-slate-400 mb-2">Teilnehmer *</label>
+                    <label className="block text-sm text-slate-400 mb-2">Teilnehmer:innen *</label>
                     <input
                       type="number"
                       value={manualData.totalParticipants}
@@ -1778,7 +1803,7 @@ Erstellt mit TSC Startgeld-Erstattung App
                     />
                   </div>
                   <div>
-                    <label className="block text-sm text-slate-400 mb-2">Wettfahrten</label>
+                    <label className="block text-sm text-slate-400 mb-2">Gew. Wettfahrten</label>
                     <input
                       type="number"
                       value={manualData.raceCount}
@@ -1822,7 +1847,7 @@ Erstellt mit TSC Startgeld-Erstattung App
                             type="text"
                             value={member.name}
                             onChange={(e) => updateCrewMember(index, 'name', e.target.value)}
-                            placeholder={index === 0 ? 'Steuermann/Skipper' : `Crew ${index + 1}`}
+                            placeholder={index === 0 ? 'Steuerperson/Skipper:in' : `Crew ${index + 1}`}
                             className="flex-1 px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white placeholder-slate-500 focus:outline-none focus:border-violet-500/50 text-sm"
                           />
                           <input
@@ -1950,7 +1975,7 @@ Erstellt mit TSC Startgeld-Erstattung App
               
               <div className="p-4 rounded-xl bg-white/5 mb-6">
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-                  <div><div className="text-slate-500">Segler</div><div className="text-white font-medium">{boatData.seglername || '-'}</div></div>
+                  <div><div className="text-slate-500">Segler:in</div><div className="text-white font-medium">{boatData.seglername || '-'}</div></div>
                   <div><div className="text-slate-500">Segelnummer</div><div className="text-white font-medium">{boatData.segelnummer || '-'}</div></div>
                   <div><div className="text-slate-500">Bootsklasse</div><div className="text-white font-medium">{boatData.bootsklasse}</div></div>
                   <div><div className="text-slate-500">IBAN</div><div className="text-white font-medium">...{boatData.iban?.slice(-8) || '-'}</div></div>
