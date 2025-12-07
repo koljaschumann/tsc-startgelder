@@ -3,6 +3,7 @@ import * as pdfjsLib from 'pdfjs-dist'
 import { jsPDF } from 'jspdf'
 import 'jspdf-autotable'
 import Tesseract from 'tesseract.js'
+import { PDFDocument } from 'pdf-lib'
 
 // PDF.js Worker
 const setupPdfWorker = () => {
@@ -249,201 +250,7 @@ const StatCard = ({ icon, label, value, subValue, color = 'purple' }) => {
   );
 };
 
-// ============================================
-// PARSER-STRATEGIEN
-// ============================================
-const ParserStrategies = {
-  // Manage2Sail Format
-  manage2sail: {
-    name: 'Manage2Sail',
-    detect: (text) => {
-      // Explizite Erwähnung
-      if (text.includes('manage2sail') || text.includes('Manage2Sail') || text.includes('M2S')) return true;
-      // Typisches Format: "Final Overall Results" + "Discard rule"
-      if (text.includes('Final Overall Results') || text.includes('Discard rule')) return true;
-      // Format mit R1, R2, R3 Spaltenüberschriften
-      if (/R1\s+R2\s+R3/i.test(text)) return true;
-      return false;
-    },
-    parseRank: (text, sailNumber) => {
-      const sailDigits = sailNumber.replace(/\D/g, '');
-      const patterns = [
-        // Tabellen-Format: "1 GER 12345 Name Club 5 7 ..."
-        new RegExp(`^\\s*(\\d+)\\s+(?:GER|AUT|SUI|NED|POL|DEN|SWE|FRA|ITA|ESP|GBR)?\\s*${sailDigits}\\b`, 'gmi'),
-        // Format: "GER 12345 ... 1."
-        new RegExp(`GER\\s*${sailDigits}[^\\n]*?(\\d+)\\.?\\s*$`, 'gmi'),
-        // Format ohne Länderkennung: Nummer Segelnummer Name
-        new RegExp(`(\\d{1,3})\\s+${sailDigits}\\s+[A-ZÄÖÜ]`, 'gm'),
-        // Segelnummer gefolgt von Punktzahlen und dann Platzierung
-        new RegExp(`${sailDigits}[^\\n]+?(\\d{1,3})\\s*$`, 'gm'),
-      ];
-      for (const pattern of patterns) {
-        pattern.lastIndex = 0; // Reset regex
-        const match = pattern.exec(text);
-        if (match) {
-          const rank = parseInt(match[1]);
-          if (rank > 0 && rank < 500) return rank;
-        }
-      }
-      return null;
-    },
-    parseTotal: (text) => {
-      // Finde die höchste Platznummer in der gesamten Ergebnisliste
-      const rankMatches = text.match(/^\s*(\d{1,3})\s+(?:GER|AUT|SUI|NED|POL|DEN|SWE|FRA|ITA|ESP|GBR)/gmi);
-      if (rankMatches && rankMatches.length > 0) {
-        const ranks = rankMatches.map(m => parseInt(m.match(/\d+/)[0]));
-        return Math.max(...ranks);
-      }
-      // Oder explizite Angabe
-      const match = text.match(/(\d+)\s*(?:boats?|entries|teilnehmer|boote|meldungen)/i);
-      return match ? parseInt(match[1]) : null;
-    },
-    parseRaces: (text) => {
-      // Zähle nur GEWERTETE Wettfahrten (mit Punktzahlen, nicht DNS/DNF/DNC etc.)
-      // Suche nach R1, R2, etc. Spalten und prüfe ob Zahlen dahinter stehen
-      const raceHeaders = text.match(/R(\d+)/gi);
-      if (raceHeaders) {
-        const raceNums = [...new Set(raceHeaders.map(r => parseInt(r.slice(1))))];
-        // Prüfe welche Rennen tatsächlich Punkte haben (nicht nur Buchstaben wie DNS, DNF)
-        let scoredRaces = 0;
-        for (const raceNum of raceNums.sort((a,b) => a-b)) {
-          // Suche nach Punktzahlen in dieser Spalte (Zahlen 1-99 für Platzierungen)
-          const racePattern = new RegExp(`R${raceNum}[^R]*?(\\d{1,2})(?:\\s|\\(|$)`, 'gi');
-          if (racePattern.test(text)) {
-            scoredRaces = raceNum; // Das höchste gewertete Rennen
-          }
-        }
-        return scoredRaces || raceNums.length;
-      }
-      return null;
-    }
-  },
-
-  // Sailti Format  
-  sailti: {
-    name: 'Sailti',
-    detect: (text) => text.includes('sailti') || text.includes('Sailti'),
-    parseRank: (text, sailNumber) => {
-      const sailDigits = sailNumber.replace(/\D/g, '');
-      const pattern = new RegExp(`(\\d+)\\s+[^\\n]*${sailDigits}`, 'gi');
-      const match = pattern.exec(text);
-      return match ? parseInt(match[1]) : null;
-    },
-    parseTotal: (text) => {
-      // Finde die höchste Platznummer
-      const rankMatches = text.match(/^\s*(\d{1,3})\s+/gm);
-      if (rankMatches && rankMatches.length > 0) {
-        const ranks = rankMatches.map(m => parseInt(m.trim())).filter(n => n > 0 && n < 500);
-        return ranks.length > 0 ? Math.max(...ranks) : null;
-      }
-      return null;
-    },
-    parseRaces: (text) => {
-      const match = text.match(/(\d+)\s*(?:races?|wettfahrten)/i);
-      return match ? parseInt(match[1]) : null;
-    }
-  },
-
-  // DSV (Deutscher Segler-Verband) Format
-  dsv: {
-    name: 'DSV',
-    detect: (text) => text.includes('dsv') || text.includes('Deutscher Segler') || text.includes('sailing-results'),
-    parseRank: (text, sailNumber) => {
-      const sailDigits = sailNumber.replace(/\D/g, '');
-      const patterns = [
-        new RegExp(`Platz\\s*(\\d+)[^\\n]*${sailDigits}`, 'gi'),
-        new RegExp(`(\\d+)\\.\\s*Platz[^\\n]*${sailDigits}`, 'gi'),
-        new RegExp(`^\\s*(\\d+)\\s+.*${sailDigits}`, 'gmi'),
-      ];
-      for (const pattern of patterns) {
-        const match = pattern.exec(text);
-        if (match) return parseInt(match[1]);
-      }
-      return null;
-    },
-    parseTotal: (text) => {
-      // Finde höchste Platznummer
-      const match = text.match(/(\d+)\s*(?:teilnehmer|boote|starter)/i);
-      if (match) return parseInt(match[1]);
-      // Oder zähle Platzierungen
-      const rankMatches = text.match(/^\s*(\d{1,3})[\.\s]/gm);
-      if (rankMatches && rankMatches.length > 0) {
-        const ranks = rankMatches.map(m => parseInt(m.trim())).filter(n => n > 0 && n < 500);
-        return ranks.length > 0 ? Math.max(...ranks) : null;
-      }
-      return null;
-    },
-    parseRaces: (text) => {
-      const match = text.match(/(\d+)\s*(?:wettfahrten|läufe)/i);
-      return match ? parseInt(match[1]) : null;
-    }
-  },
-
-  // Generischer Parser (Fallback)
-  generic: {
-    name: 'Generisch',
-    detect: () => true,
-    parseRank: (text, sailNumber) => {
-      const sailDigits = sailNumber.replace(/\D/g, '');
-      if (!sailDigits) return null;
-      
-      const patterns = [
-        // "1. GER 12345" oder "1 GER 12345"
-        new RegExp(`(\\d+)\\.?\\s*(?:GER|AUT|SUI)?\\s*${sailDigits}\\b`, 'gi'),
-        // "GER 12345 ... 1" am Ende der Zeile
-        new RegExp(`(?:GER)?\\s*${sailDigits}[^\\n]*?\\s(\\d+)\\s*$`, 'gmi'),
-        // Nur Zahl vor Segelnummer
-        new RegExp(`^\\s*(\\d{1,3})\\s+.*${sailDigits}`, 'gmi'),
-        // Segelnummer mit Platz dahinter
-        new RegExp(`${sailDigits}[^\\d]*(\\d{1,3})(?:\\.|\\s|$)`, 'gi'),
-      ];
-      
-      for (const pattern of patterns) {
-        pattern.lastIndex = 0;
-        const match = pattern.exec(text);
-        if (match && parseInt(match[1]) > 0 && parseInt(match[1]) < 500) {
-          return parseInt(match[1]);
-        }
-      }
-      return null;
-    },
-    parseTotal: (text) => {
-      // Finde die höchste Platznummer im gesamten Text
-      const rankMatches = text.match(/^\s*(\d{1,3})[\.\s]/gm);
-      if (rankMatches && rankMatches.length > 0) {
-        const ranks = rankMatches.map(m => parseInt(m.trim())).filter(n => n > 0 && n < 500);
-        if (ranks.length > 0) return Math.max(...ranks);
-      }
-      
-      // Oder explizite Angabe
-      const match = text.match(/(\d+)\s*(?:boats?|entries|teilnehmer|boote|starter|meldungen)/i);
-      return match ? parseInt(match[1]) : null;
-    },
-    parseRaces: (text) => {
-      // Suche nach "Wettfahrten: X" oder "X Wettfahrten gewertet"
-      const scoredMatch = text.match(/(\d+)\s*(?:wettfahrten|races?)\s*(?:gewertet|scored|completed)/i);
-      if (scoredMatch) return parseInt(scoredMatch[1]);
-      
-      // R1, R2, etc. - finde die höchste Nummer mit tatsächlichen Punkten
-      const raceMatches = text.match(/\bR(\d+)/gi);
-      if (raceMatches) {
-        const nums = [...new Set(raceMatches.map(m => parseInt(m.slice(1))))];
-        // Prüfe ob die Rennen Punkte haben
-        let maxScoredRace = 0;
-        for (const num of nums.sort((a,b) => a-b)) {
-          // Suche nach einer Zeile mit Rn gefolgt von einer Zahl (nicht DNS/DNF)
-          const hasScores = new RegExp(`R${num}[\\s\\S]{0,50}?\\b([1-9]\\d?)\\b`, 'i').test(text);
-          if (hasScores) maxScoredRace = num;
-        }
-        return maxScoredRace || Math.max(...nums);
-      }
-      
-      // Oder explizite Angabe
-      const match = text.match(/(\d+)\s*(?:races?|wettfahrten|läufe)/i);
-      return match ? parseInt(match[1]) : null;
-    }
-  }
-};
+// Parser wurde vereinfacht - komplexe Strategien entfernt zugunsten des bewährten v12-Parsers;
 
 // ============================================
 // SEPA XML GENERATOR
@@ -792,149 +599,240 @@ function App() {
     }
   };
 
+  // === BEWÄHRTER PARSER AUS v12 ===
   const parseRegattaPDF = (text, sailNumber) => {
-    console.log('=== PARSING START ===');
+    console.log('=== PARSING START (v12 Parser) ===');
     console.log('Segelnummer:', sailNumber);
     console.log('Text-Länge:', text?.length);
     
+    const result = {
+      success: false,
+      regattaName: '',
+      boatClass: '',
+      date: '',
+      raceCount: 0,
+      totalParticipants: 0,
+      participant: null,
+      allResults: [],
+      feedback: null
+    };
+
     if (!text || !sailNumber) {
-      return { 
-        success: false, 
-        feedback: 'Kein Text oder keine Segelnummer vorhanden'
-      };
+      result.feedback = 'Kein Text oder keine Segelnummer vorhanden';
+      return result;
     }
-    
-    // Strategie auswählen
-    let strategy = null;
-    let strategyName = 'generic';
-    
-    for (const [name, strat] of Object.entries(ParserStrategies)) {
-      if (name !== 'generic' && strat.detect(text)) {
-        strategy = strat;
-        strategyName = name;
-        console.log('Erkannte Strategie:', name);
-        break;
-      }
-    }
-    
-    if (!strategy) {
-      strategy = ParserStrategies.generic;
-      strategyName = 'generic';
-    }
-    
-    // Check für gelernte Patterns
-    const learnedKey = text.slice(0, 100).replace(/\s/g, '').toLowerCase();
-    const learned = learnedPatterns[learnedKey];
-    if (learned) {
-      console.log('Verwende gelerntes Pattern:', learned);
-    }
-    
-    // Parsing durchführen
-    const rank = strategy.parseRank(text, sailNumber);
-    const total = strategy.parseTotal(text);
-    const races = strategy.parseRaces(text);
-    
-    // Regattaname extrahieren
-    let regattaName = null;
-    
-    // Manage2Sail Format: "Final Overall Results" -> suche nach Event/Regatta Namen davor
-    const manage2sailMatch = text.match(/^([^\n]{10,60}?)(?:\s+Final|\s+Overall|\s+Results)/im);
-    if (manage2sailMatch) {
-      regattaName = manage2sailMatch[1].trim();
-    }
-    
-    // Andere Patterns versuchen
-    if (!regattaName) {
+
+    try {
+      const normalizedText = text.replace(/\s+/g, ' ');
+      
+      // === REGATTA-NAME EXTRAHIEREN ===
+      // Zuerst nach typischen Regattanamen suchen
       const namePatterns = [
-        /(?:regatta|meisterschaft|pokal|cup|trophy|preis)[:\s]+([^\n]+)/i,
-        /^([A-ZÄÖÜ][^\n]{5,50}(?:regatta|cup|pokal|preis|trophy|meisterschaft))/im,
-        /event[:\s]+([^\n]+)/i,
-        /veranstaltung[:\s]+([^\n]+)/i,
-        // Suche nach typischen Regattanamen-Mustern
-        /(\d{4}\s+[A-ZÄÖÜ][a-zäöü]+(?:\s+[A-ZÄÖÜ][a-zäöü]+)*(?:\s+(?:Cup|Pokal|Preis|Trophy|Regatta|Meisterschaft)))/i,
+        // "Xyz-Preis 2025" oder "Abc Pokal 2024"
+        /([A-Za-zäöüÄÖÜß\-]+(?:[\s\-][A-Za-zäöüÄÖÜß\-]+)*[\s\-]*(?:Preis|Pokal|Cup|Trophy|Regatta|Festival|Meisterschaft)[\s\-]*\d{4})/i,
+        // Nach "manage2sail.com" den Namen finden
+        /manage2sail\.com\s+([A-Za-zäöüÄÖÜß0-9\s\-]+?)(?:\s+Ergebnisse|\s+Overall|\s+Results)/i,
+        // Einfach nach Regatta-Keywords suchen
+        /([A-ZÄÖÜ][A-Za-zäöüÄÖÜß\s\-]{5,40}(?:Cup|Pokal|Preis|Trophy|Regatta|Meisterschaft))/i,
+        // Erste Zeile wenn sie wie ein Titel aussieht (Großbuchstaben dominant)
+        /^([A-ZÄÖÜ][A-ZÄÖÜ0-9\s\-]{10,50})/m,
       ];
+      
       for (const pattern of namePatterns) {
         const match = text.match(pattern);
         if (match) {
-          regattaName = match[1].trim();
-          break;
-        }
-      }
-    }
-    
-    // Fallback: Ersten sinnvollen Teil des Textes nehmen
-    if (!regattaName) {
-      // Nimm die ersten Wörter bis zu einem Trennzeichen
-      const firstLine = text.split('\n')[0] || '';
-      const cleanedLine = firstLine.replace(/^\d+\s*/, '').trim(); // Führende Zahlen entfernen
-      
-      if (cleanedLine.length > 5 && cleanedLine.length < 100) {
-        // Kürze auf max 50 Zeichen
-        regattaName = cleanedLine.slice(0, 50).trim();
-        if (cleanedLine.length > 50) regattaName += '...';
-      }
-    }
-    
-    // Letzter Fallback
-    if (!regattaName) {
-      regattaName = `Regatta vom ${new Date().toLocaleDateString('de-DE')}`;
-    }
-    
-    // Bereinigen: Entferne übermäßig lange Namen
-    if (regattaName && regattaName.length > 80) {
-      regattaName = regattaName.slice(0, 77) + '...';
-    }
-    
-    // Datum extrahieren
-    let date = null;
-    const dateMatch = text.match(/(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{2,4})/);
-    if (dateMatch) {
-      const [, day, month, year] = dateMatch;
-      const fullYear = year.length === 2 ? '20' + year : year;
-      date = `${fullYear}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
-    }
-    
-    // Bootsklasse erkennen
-    let boatClass = null;
-    for (const [className, config] of Object.entries(BOAT_CLASSES)) {
-      if (text.toLowerCase().includes(className.toLowerCase())) {
-        boatClass = className;
-        break;
-      }
-      if (config.alias) {
-        for (const alias of config.alias) {
-          if (text.toLowerCase().includes(alias.toLowerCase())) {
-            boatClass = className;
+          result.regattaName = match[1].trim().replace(/\s+/g, ' ');
+          if (result.regattaName.length > 5 && result.regattaName.length < 80) {
+            console.log('Regattaname gefunden:', result.regattaName);
             break;
           }
         }
       }
-    }
-    
-    // Feedback generieren
-    let feedback = null;
-    if (!rank) {
-      feedback = `Segelnummer "${sailNumber}" wurde im Text nicht gefunden. `;
-      if (text.includes(sailNumber.replace(/\D/g, ''))) {
-        feedback += 'Die Ziffern wurden gefunden, aber das Format stimmt möglicherweise nicht überein.';
-      } else {
-        feedback += 'Bitte prüfe, ob die Segelnummer korrekt ist.';
+      
+      // Fallback: Erste nicht-leere Zeile nehmen
+      if (!result.regattaName) {
+        const lines = text.split('\n').filter(l => l.trim().length > 5);
+        if (lines.length > 0) {
+          let firstLine = lines[0].trim();
+          // Wenn die Zeile mit einer URL oder technischem Text beginnt, nächste Zeile nehmen
+          if (firstLine.includes('http') || firstLine.includes('www.') || /^\d+\s*$/.test(firstLine)) {
+            firstLine = lines[1]?.trim() || firstLine;
+          }
+          result.regattaName = firstLine.slice(0, 60);
+          if (firstLine.length > 60) result.regattaName += '...';
+        }
       }
+      
+      // === BOOTSKLASSE ERKENNEN ===
+      const classPatterns = [
+        /(?:Klasse|Class)[:\s]*([A-Za-z0-9\s]+?)(?:\s+Ergebnisse|\s+Overall|\s+Results|\s+R1)/i,
+        /(Optimist\s*[AB]?|ILCA\s*\d|Laser|420er?|470er?|29er|49er|Europe|Finn|OK[\-\s]?Jolle|Pirat|Korsar)/i,
+      ];
+      
+      for (const pattern of classPatterns) {
+        const match = normalizedText.match(pattern);
+        if (match) {
+          result.boatClass = match[1].trim();
+          break;
+        }
+      }
+      
+      // === DATUM EXTRAHIEREN ===
+      const dateMatch = normalizedText.match(/(\d{1,2})[.\-\/](\d{1,2})[.\-\/](\d{2,4})/);
+      if (dateMatch) {
+        const day = dateMatch[1].padStart(2, '0');
+        const month = dateMatch[2].padStart(2, '0');
+        let year = dateMatch[3];
+        if (year.length === 2) year = '20' + year;
+        result.date = `${year}-${month}-${day}`;
+      }
+      
+      // === WETTFAHRTEN ZÄHLEN ===
+      // Zähle R1, R2, R3 etc. - aber nur die mit tatsächlichen Ergebnissen
+      const raceHeaders = text.match(/R(\d+)/gi);
+      if (raceHeaders) {
+        const uniqueRaces = [...new Set(raceHeaders.map(r => parseInt(r.slice(1))))];
+        // Finde die höchste Rennnummer die Zahlen (Platzierungen) enthält
+        let maxScoredRace = 0;
+        for (const raceNum of uniqueRaces.sort((a, b) => a - b)) {
+          // Prüfe ob es numerische Ergebnisse für dieses Rennen gibt
+          // (DNS, DNF, DNC sind keine Punkte)
+          const hasNumericResults = new RegExp(`R${raceNum}\\D*?(\\d{1,2})(?![0-9])`, 'i').test(text);
+          if (hasNumericResults) {
+            maxScoredRace = raceNum;
+          }
+        }
+        result.raceCount = maxScoredRace || uniqueRaces.length;
+        console.log('Wettfahrten gefunden:', result.raceCount, 'von', uniqueRaces.length, 'gesamt');
+      }
+      
+      // === SEGELNUMMER UND PLATZIERUNG FINDEN ===
+      const lines = text.split('\n');
+      const entries = [];
+      
+      // Normalisiere die gesuchte Segelnummer
+      const normalizedSail = sailNumber.replace(/\s+/g, '').toUpperCase();
+      const sailNumberOnly = sailNumber.replace(/[^0-9]/g, '');
+      
+      console.log('Suche Segelnummer:', normalizedSail, 'Ziffern:', sailNumberOnly);
+      
+      for (const line of lines) {
+        // Suche nach Segelnummern in verschiedenen Formaten
+        const sailPatterns = [
+          /([A-Z]{2,3})\s*(\d{3,6})/gi,  // GER 13162 oder GER13162
+          /\b(\d{4,6})\b/g,               // Nur Nummern wie 13162
+        ];
+        
+        let foundSailInLine = null;
+        let foundSailNumber = null;
+        
+        for (const pattern of sailPatterns) {
+          pattern.lastIndex = 0;
+          const matches = [...line.matchAll(pattern)];
+          for (const match of matches) {
+            const fullMatch = match[0].replace(/\s+/g, '').toUpperCase();
+            const numberPart = match[2] || match[1];
+            
+            // Prüfe ob diese Segelnummer zur gesuchten passt
+            if (fullMatch === normalizedSail || 
+                fullMatch.includes(sailNumberOnly) ||
+                numberPart === sailNumberOnly) {
+              foundSailInLine = fullMatch.includes('GER') ? fullMatch : 'GER' + numberPart;
+              foundSailNumber = numberPart;
+              break;
+            }
+          }
+          if (foundSailInLine) break;
+        }
+        
+        // Wenn wir die gesuchte Segelnummer gefunden haben
+        if (foundSailInLine) {
+          console.log('Segelnummer gefunden in Zeile:', line.substring(0, 80));
+          
+          // Rang finden
+          const rankPatterns = [
+            /^\s*(\d{1,3})[\s.)\-]/,           // "5. " am Anfang
+            /^\s*(\d{1,3})\s+[A-Z]/,           // "5 GER" am Anfang  
+            /Rank[:\s]*(\d{1,3})/i,            // "Rank: 5"
+            /Platz[:\s]*(\d{1,3})/i,           // "Platz 5"
+            /(\d{1,3})\s*$/,                   // Zahl am Ende der Zeile
+          ];
+          
+          let rank = null;
+          for (const rankPattern of rankPatterns) {
+            const rankMatch = line.match(rankPattern);
+            if (rankMatch) {
+              rank = parseInt(rankMatch[1]);
+              if (rank > 0 && rank <= 500) {
+                console.log('Platzierung gefunden:', rank);
+                break;
+              }
+            }
+          }
+          
+          // Name finden (Vorname Nachname oder NACHNAME Vorname)
+          const nameMatch = line.match(/([A-ZÄÖÜ][a-zäöüß]+)\s+([A-ZÄÖÜ][A-ZÄÖÜ]+)/);
+          
+          if (rank) {
+            result.participant = {
+              rank,
+              sailNumber: foundSailInLine,
+              name: nameMatch ? `${nameMatch[2]} ${nameMatch[1]}` : boatData.seglername,
+            };
+          }
+        }
+        
+        // Alle Einträge für Gesamtteilnehmerzahl sammeln
+        const allSailMatches = [...line.matchAll(/([A-Z]{2,3})\s*(\d{3,6})/gi)];
+        for (const sailMatch of allSailMatches) {
+          const rankMatch = line.match(/^\s*(\d{1,3})[\s.)\-]/);
+          if (rankMatch) {
+            const rank = parseInt(rankMatch[1]);
+            if (rank > 0 && rank <= 500) {
+              entries.push({
+                rank,
+                sailNumber: (sailMatch[1] + sailMatch[2]).toUpperCase(),
+              });
+            }
+          }
+        }
+      }
+      
+      // Ergebnisse zusammenfassen
+      result.allResults = entries.sort((a, b) => a.rank - b.rank);
+      result.totalParticipants = entries.length > 0 ? Math.max(...entries.map(e => e.rank)) : 0;
+      result.success = result.participant !== null;
+      
+      // Fallback für Regattaname
+      if (!result.regattaName || result.regattaName.length < 3) {
+        result.regattaName = result.boatClass 
+          ? `Regatta (${result.boatClass})` 
+          : `Regatta vom ${new Date().toLocaleDateString('de-DE')}`;
+      }
+      
+      // Feedback generieren
+      if (!result.participant) {
+        result.feedback = `Segelnummer "${sailNumber}" wurde nicht gefunden. `;
+        if (text.includes(sailNumberOnly)) {
+          result.feedback += 'Die Ziffern wurden gefunden - bitte Format prüfen (z.B. "GER 12345").';
+        } else {
+          result.feedback += 'Bitte prüfe ob die Segelnummer korrekt ist.';
+        }
+      }
+      
+      console.log('=== PARSING ERGEBNIS ===', { 
+        participant: result.participant, 
+        totalParticipants: result.totalParticipants,
+        raceCount: result.raceCount,
+        regattaName: result.regattaName 
+      });
+      
+    } catch (err) {
+      console.error('Parse error:', err);
+      result.feedback = 'Fehler beim Parsen: ' + err.message;
     }
     
-    console.log('Ergebnis:', { rank, total, races, regattaName, date, boatClass });
-    
-    return {
-      success: !!rank,
-      strategy: strategyName,
-      participant: rank ? { rank, name: boatData.seglername, sailNumber } : null,
-      totalParticipants: total,
-      raceCount: races,
-      regattaName,
-      date,
-      boatClass: boatClass || boatData.bootsklasse,
-      feedback,
-    };
+    return result;
   };
 
   const processResultPdf = async (file) => {
@@ -992,7 +890,7 @@ function App() {
           
           // Ergebnis setzen
           setPdfResult(result);
-          setParserUsed(result.strategy + (useOCR ? ' (OCR)' : ''));
+          setParserUsed(useOCR ? 'OCR' : 'Direkt');
           setParsingFeedback(result.feedback);
           
           // Erkannte Werte in die manuellen Felder übertragen (zur Korrektur)
@@ -1416,47 +1314,190 @@ function App() {
     }
   };
 
+  // === ALLE DOKUMENTE IN EINER PDF ZUSAMMENFASSEN ===
   const downloadAllDocuments = async () => {
     if (regatten.length === 0) {
       setError('Keine Regatten vorhanden');
       return;
     }
     
-    setSuccess('Downloads werden vorbereitet...');
+    setSuccess('Kombinierte PDF wird erstellt...');
     
-    generatePDF();
-    await new Promise(r => setTimeout(r, 500));
-    generateCSV();
-    await new Promise(r => setTimeout(r, 500));
-    generateSEPA();
-    
-    // Original-PDFs
-    for (const [i, att] of pdfAttachments.entries()) {
-      if (att.resultPdf) {
-        await new Promise(r => setTimeout(r, 300));
-        const blob = new Blob([Uint8Array.from(atob(att.resultPdf), c => c.charCodeAt(0))], { type: 'application/pdf' });
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = `${i + 1}_Ergebnis_${att.regattaName?.replace(/[^a-zA-Z0-9]/g, '_')}.pdf`;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
+    try {
+      // Neues PDF-Dokument erstellen
+      const mergedPdf = await PDFDocument.create();
+      
+      // 1. Erstattungsantrag generieren und hinzufügen
+      const applicationPdfBytes = await generatePDFBytes();
+      if (applicationPdfBytes) {
+        const applicationPdf = await PDFDocument.load(applicationPdfBytes);
+        const applicationPages = await mergedPdf.copyPages(applicationPdf, applicationPdf.getPageIndices());
+        applicationPages.forEach(page => mergedPdf.addPage(page));
       }
-      if (att.invoicePdf) {
-        await new Promise(r => setTimeout(r, 300));
-        const blob = new Blob([Uint8Array.from(atob(att.invoicePdf), c => c.charCodeAt(0))], { type: 'application/pdf' });
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = `${i + 1}_Rechnung_${att.regattaName?.replace(/[^a-zA-Z0-9]/g, '_')}.pdf`;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
+      
+      // 2. Für jede Regatta: Ergebnisliste und Rechnung hinzufügen
+      for (const [i, att] of pdfAttachments.entries()) {
+        // Ergebnisliste
+        if (att.resultPdf) {
+          try {
+            const resultBytes = Uint8Array.from(atob(att.resultPdf), c => c.charCodeAt(0));
+            const resultPdf = await PDFDocument.load(resultBytes);
+            const resultPages = await mergedPdf.copyPages(resultPdf, resultPdf.getPageIndices());
+            resultPages.forEach(page => mergedPdf.addPage(page));
+          } catch (e) {
+            console.error(`Fehler bei Ergebnisliste ${i + 1}:`, e);
+          }
+        }
+        
+        // Rechnung
+        if (att.invoicePdf) {
+          try {
+            const invoiceBytes = Uint8Array.from(atob(att.invoicePdf), c => c.charCodeAt(0));
+            const invoicePdf = await PDFDocument.load(invoiceBytes);
+            const invoicePages = await mergedPdf.copyPages(invoicePdf, invoicePdf.getPageIndices());
+            invoicePages.forEach(page => mergedPdf.addPage(page));
+          } catch (e) {
+            console.error(`Fehler bei Rechnung ${i + 1}:`, e);
+          }
+        }
+      }
+      
+      // Kombinierte PDF speichern
+      const mergedPdfBytes = await mergedPdf.save();
+      const blob = new Blob([mergedPdfBytes], { type: 'application/pdf' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `TSC_Startgeld_${currentSeason}_${boatData.seglername.replace(/[^a-zA-Z0-9]/g, '_')}_komplett.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      
+      // Zusätzlich CSV und SEPA separat
+      await new Promise(r => setTimeout(r, 300));
+      generateCSV();
+      await new Promise(r => setTimeout(r, 300));
+      generateSEPA();
+      
+      setSuccess('Alle Dateien heruntergeladen (PDF kombiniert)');
+    } catch (err) {
+      console.error('Fehler beim Erstellen der kombinierten PDF:', err);
+      setError('Fehler beim Kombinieren der PDFs: ' + err.message);
+      
+      // Fallback: Einzelne Downloads
+      setSuccess('Fallback: Einzelne Downloads...');
+      generatePDF();
+      await new Promise(r => setTimeout(r, 500));
+      generateCSV();
+      await new Promise(r => setTimeout(r, 500));
+      generateSEPA();
+      
+      for (const [i, att] of pdfAttachments.entries()) {
+        if (att.resultPdf) {
+          await new Promise(r => setTimeout(r, 300));
+          const blob = new Blob([Uint8Array.from(atob(att.resultPdf), c => c.charCodeAt(0))], { type: 'application/pdf' });
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = `${i + 1}_Ergebnis_${att.regattaName?.replace(/[^a-zA-Z0-9]/g, '_')}.pdf`;
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+        }
+        if (att.invoicePdf) {
+          await new Promise(r => setTimeout(r, 300));
+          const blob = new Blob([Uint8Array.from(atob(att.invoicePdf), c => c.charCodeAt(0))], { type: 'application/pdf' });
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = `${i + 1}_Rechnung_${att.regattaName?.replace(/[^a-zA-Z0-9]/g, '_')}.pdf`;
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+        }
       }
     }
-    
-    setSuccess('Alle Dateien heruntergeladen');
+  };
+  
+  // Hilfsfunktion: PDF als Bytes generieren (für Zusammenführung)
+  const generatePDFBytes = async () => {
+    return new Promise((resolve) => {
+      const doc = new jsPDF();
+      
+      // Header
+      doc.setFontSize(18);
+      doc.setFont('helvetica', 'bold');
+      doc.text('Antrag auf Erstattung von Startgeldern', 105, 20, { align: 'center' });
+      
+      doc.setFontSize(12);
+      doc.setFont('helvetica', 'normal');
+      doc.text(`Tegeler Segel-Club e.V. - Saison ${currentSeason}`, 105, 28, { align: 'center' });
+      
+      // Antragsteller-Daten
+      doc.setFontSize(10);
+      doc.setFont('helvetica', 'bold');
+      doc.text('Antragsteller:', 20, 45);
+      doc.setFont('helvetica', 'normal');
+      doc.text(`Name: ${boatData.seglername}`, 20, 52);
+      doc.text(`Segelnummer: ${boatData.segelnummer}`, 20, 58);
+      doc.text(`Bootsklasse: ${boatData.bootsklasse}`, 20, 64);
+      
+      // Bankverbindung
+      doc.setFont('helvetica', 'bold');
+      doc.text('Bankverbindung:', 110, 45);
+      doc.setFont('helvetica', 'normal');
+      doc.text(`IBAN: ${boatData.iban || '-'}`, 110, 52);
+      doc.text(`Kontoinhaber: ${boatData.kontoinhaber || boatData.seglername}`, 110, 58);
+      
+      // Tabelle
+      const tableData = regatten.map((r, i) => [
+        i + 1,
+        r.regattaName || '-',
+        r.date ? new Date(r.date).toLocaleDateString('de-DE') : '-',
+        `${r.placement || '-'}. / ${r.totalParticipants || '-'}`,
+        r.raceCount || '-',
+        r.crew?.length > 0 ? r.crew.map(c => c.name).join(', ') : '-',
+        `${(r.invoiceAmount || 0).toFixed(2)} €`
+      ]);
+      
+      doc.autoTable({
+        startY: 75,
+        head: [['#', 'Regatta', 'Datum', 'Platz', 'WF', 'Crew', 'Betrag']],
+        body: tableData,
+        theme: 'striped',
+        headStyles: { fillColor: [100, 80, 180] },
+        styles: { fontSize: 8 },
+        columnStyles: {
+          0: { cellWidth: 8 },
+          1: { cellWidth: 50 },
+          2: { cellWidth: 22 },
+          3: { cellWidth: 20 },
+          4: { cellWidth: 12 },
+          5: { cellWidth: 45 },
+          6: { cellWidth: 20 },
+        }
+      });
+      
+      // Summe
+      const finalY = doc.lastAutoTable.finalY + 10;
+      doc.setFont('helvetica', 'bold');
+      doc.text(`Gesamtbetrag: ${totalAmount.toFixed(2)} €`, 20, finalY);
+      
+      // Unterschrift
+      doc.setFont('helvetica', 'normal');
+      doc.text(`Datum: ${new Date().toLocaleDateString('de-DE')}`, 20, finalY + 20);
+      doc.line(110, finalY + 20, 190, finalY + 20);
+      doc.text('Unterschrift', 150, finalY + 25, { align: 'center' });
+      
+      // Footer
+      doc.setFontSize(8);
+      doc.text('Erstellt mit TSC Startgeld App', 105, 285, { align: 'center' });
+      
+      // Als ArrayBuffer zurückgeben
+      const pdfOutput = doc.output('arraybuffer');
+      resolve(new Uint8Array(pdfOutput));
+    });
   };
 
   const submitOnline = async () => {
